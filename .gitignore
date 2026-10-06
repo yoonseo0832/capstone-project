@@ -8,3 +8,4 @@ workspace/data/
 workspace/docs/
 *.db
 .pytest_cache/
+
