@@ -30,7 +30,6 @@ def answer(bot: ScheduleAssistant, question: str, timing: bool) -> None:
 def main(argv=None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-        sys.stdin.reconfigure(encoding="utf-8")
     p = argparse.ArgumentParser(prog="python -m assistant", description="일정 비서 (Gemini API)")
     p.add_argument("question", nargs="*", help="한 번만 물어볼 질문 (없으면 대화 모드)")
     p.add_argument("--timing", action="store_true", help="응답 시간 표시")
