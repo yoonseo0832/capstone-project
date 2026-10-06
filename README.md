@@ -48,6 +48,35 @@ python -m assistant                    # 비서와 대화
 - **GEMINI_API_KEY**: https://aistudio.google.com/apikey (무료)
 - `.env`, `*.db` 는 `.gitignore` 에 있어서 **GitHub에 올라가지 않는다** (키·개인 과제 데이터 보호)
 
+### 비서 사용법
+```bash
+python -m assistant                              # 대화 모드 (앞 대화 기억, 종료: exit)
+python -m assistant "이번 주 마감 뭐 있어?"         # 한 번만 질문 (따옴표 필수)
+python -m assistant --timing "다음 주는?"         # 응답 시간 + 실제 답한 모델 표시
+python -m assistant --model gemini-2.5-flash "…" # 모델 지정
+```
+
+| 하고 싶은 것 | 이렇게 말하기 |
+|---|---|
+| 조회 | "이번 주 마감 뭐 있어?", "다음 주는?", "빅데이터개론 남은 과제", "10월 안에 끝내야 하는 거" |
+| 완료 | "Week 04 Lab 끝냈어", "Assignment1 제출했어" |
+| 추가 | "10월 20일 오후 3시에 캡스톤 회의 추가해줘" |
+| 수정 | "캡스톤 회의 10월 21일로 바꿔줘" |
+| 삭제 | "캡스톤 회의 삭제해줘" ("삭제/지워" 라고 해야 지움) |
+| LMS 새로고침 | "LMS 새로고침해줘" |
+
+대상이 여러 개면(예: "과제 끝냈어") 추측하지 않고 되묻는다. **개수 질문("몇 개야?")은 틀릴 수 있으니 목록으로 물어보기** (7장).
+
+AI 없이 확인·수정: `python -m lms list` / `done <id>` / `add "제목" --due "YYYY-MM-DD HH:MM"` / `delete <id>`
+
+| 메시지 | 해결 |
+|---|---|
+| `모든 모델이 바쁘거나 무료 사용량을 초과` | 1분 뒤 다시 질문 |
+| `GEMINI_API_KEY 가 없습니다` | `.env` 에 키 입력 |
+| `ModuleNotFoundError` | `.venv\Scripts\activate` 먼저 |
+| 일정이 비어 있음 | `python -m lms sync` 먼저 |
+| 입력이 안 됨 (VS Code 밖 Git Bash 창) | PowerShell 사용 또는 `winpty python -m assistant` |
+
 ---
 
 ## 4. 팀원이 알아야 할 것: 공유 일정 테이블
@@ -124,7 +153,7 @@ schedule_db.delete_schedule(DB, schedule_id)
 ### 기타
 | 파일 | 하는 일 |
 |---|---|
-| [tests/](tests/) | pytest 16개. 가짜 Canvas·가짜 Gemini 로 **API 키 없이** 돌아간다 (중복 방지, 해시 변경 감지, 완료→삭제→재등록 방지, 함수 호출 등) |
+| [tests/](tests/) | pytest 20개. 가짜 Canvas·가짜 Gemini 로 **API 키 없이** 돌아간다 (중복 방지, 해시 변경 감지, 완료→삭제→재등록 방지, 함수 호출 등) |
 | [.env.example](.env.example) | `.env` 템플릿 (실제 키는 넣지 않음) |
 | [requirements.txt](requirements.txt) | 의존성 |
 
@@ -146,6 +175,18 @@ schedule_db.delete_schedule(DB, schedule_id)
 | **Gemini API 직접 호출** (현재) | 첫 글자 **약 1.1~1.8초**, 전체 2초 안팎 (실측) |
 
 기본 모델 `gemini-2.5-flash-lite` (thinking 끔). `.env` 의 `GEMINI_MODEL` 로 변경 가능.
+
+**자동 전환(fallback)**: 기본 모델이 과부하(503)·무료 한도 초과(429)면
+`gemini-2.5-flash` → `gemini-3.5-flash-lite` 순서로 자동 재시도한다 (무료 한도는 모델별이라 바꾸면 대개 통과).
+답하던 도중 끊기면 "응답이 끊겨서 다시 답할게요" 안내 후 다음 모델로 처음부터 답한다.
+순서는 `.env` 의 `GEMINI_FALLBACK_MODELS=a,b` 로 변경.
+실제로 기본 모델이 응답하지 못했을 때 `gemini-2.5-flash` 로 넘어가 2초 안에 답한 것을 확인함.
+
+**무료 vs 유료**: 평소 개발은 무료 티어 + 자동 전환으로 충분하다. 시연 당일 안정성이 필요하면
+AI Studio 에서 키의 프로젝트에 Google Cloud 결제를 연결해 유료 티어로 전환 (한도 대폭 증가, 코드 수정 없음).
+- Gemini 앱 구독(Google AI Pro)은 API 사용량과 별개로 알고 있음 → API 는 결제 연결이 따로 필요 (확인 필요)
+- Cloud 예산 **알림**을 걸어둘 것 (자동 차단 상한이 아니라 알림)
+- 유료여도 서버 과부하(503)는 생길 수 있어 자동 전환은 계속 필요
 
 **알려진 한계 (실측)** — 정답이 정해진 질문 6개로 비교:
 - "이번 주 / 다음 주 / 특정 기간" 일정 목록은 정확

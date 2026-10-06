@@ -24,7 +24,7 @@ def answer(bot: ScheduleAssistant, question: str, timing: bool) -> None:
         print(piece, end="", flush=True)
     print()
     if timing:
-        print(f"  (첫 글자 {first or 0:.2f}s / 전체 {time.perf_counter() - start:.2f}s, 모델 {bot.model})")
+        print(f"  (첫 글자 {first or 0:.2f}s / 전체 {time.perf_counter() - start:.2f}s, 모델 {bot.last_model})")
 
 
 def main(argv=None) -> int:

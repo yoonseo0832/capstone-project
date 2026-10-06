@@ -19,6 +19,9 @@ from common import schedule_db
 from lms.config import Settings
 
 DEFAULT_MODEL = "gemini-2.5-flash-lite"
+# 기본 모델이 과부하(503)/한도초과(429)면 순서대로 시도. .env GEMINI_FALLBACK_MODELS=a,b 로 변경
+DEFAULT_FALLBACKS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"]
+RETRY_CODES = {429, 500, 503, 504}
 MAX_HISTORY = 10  # 기억할 최근 대화 턴 수 (user+model 쌍)
 
 SYSTEM_RULES = """당신은 대학생의 일정 관리 비서입니다. 아래 [일정] 데이터만 근거로 한국어로 짧고 명확하게 답합니다.
@@ -82,6 +85,10 @@ class ScheduleAssistant:
                  client: genai.Client | None = None):
         self.settings = settings
         self.model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
+        fallbacks = os.environ.get("GEMINI_FALLBACK_MODELS")
+        fallbacks = [m.strip() for m in fallbacks.split(",") if m.strip()] if fallbacks else DEFAULT_FALLBACKS
+        self.models = list(dict.fromkeys([self.model, *fallbacks]))  # 순서 유지 + 중복 제거
+        self.last_model = self.model
         key = api_key or os.environ.get("GEMINI_API_KEY")
         if client is None and not key:
             raise RuntimeError(".env 에 GEMINI_API_KEY 가 없습니다 (https://aistudio.google.com/apikey)")
@@ -135,8 +142,9 @@ class ScheduleAssistant:
 
     # ------------------------------------------------------------ 대화
 
-    def _config(self) -> types.GenerateContentConfig:
-        thinking = types.ThinkingConfig(thinking_budget=0) if "2.5" in self.model else None
+    def _config(self, model: str) -> types.GenerateContentConfig:
+        # 2.5 계열만 thinking 을 완전히 끌 수 있다 (3.x 에 budget=0 을 주면 400 에러)
+        thinking = types.ThinkingConfig(thinking_budget=0) if "2.5" in model else None
         return types.GenerateContentConfig(
             system_instruction=SYSTEM_RULES + "\n[일정]\n" + build_context(self.settings.schedule_db),
             tools=[types.Tool(function_declarations=FUNCTIONS)],
@@ -148,23 +156,31 @@ class ScheduleAssistant:
     def ask(self, question: str) -> Iterator[str]:
         """답변을 조각(chunk) 단위로 흘려보낸다."""
         contents = self.history + [types.Content(role="user", parts=[types.Part(text=question)])]
-        answer, calls = [], []
-        try:
-            for chunk in self.client.models.generate_content_stream(
-                    model=self.model, contents=contents, config=self._config()):
-                # chunk.text 는 함수 호출이 섞이면 경고를 찍으므로 part 에서 직접 꺼낸다
-                for part in _parts(chunk):
-                    if part.function_call:
-                        calls.append(part.function_call)
-                    elif part.text and not part.thought:
-                        answer.append(part.text)
-                        yield part.text
-        except errors.APIError as e:
-            if e.code == 429:
-                yield "⚠️ 무료 사용량을 잠깐 초과했어요. 1분쯤 뒤에 다시 물어봐 주세요."
-            else:
-                yield f"⚠️ Gemini API 오류 ({e.code}): {e.message}"
-            return
+        answer, calls = [], []  # 마지막으로 시도한 모델의 결과
+        for i, model in enumerate(self.models):
+            answer, calls = [], []
+            try:
+                for chunk in self.client.models.generate_content_stream(
+                        model=model, contents=contents, config=self._config(model)):
+                    # chunk.text 는 함수 호출이 섞이면 경고를 찍으므로 part 에서 직접 꺼낸다
+                    for part in _parts(chunk):
+                        if part.function_call:
+                            calls.append(part.function_call)
+                        elif part.text and not part.thought:
+                            answer.append(part.text)
+                            yield part.text
+                self.last_model = model
+                break
+            except errors.APIError as e:
+                # 과부하(503)·한도초과(429)·서버오류는 다음 모델로. 무료 한도는 모델별이라 바꾸면 대개 통과
+                if e.code not in RETRY_CODES:
+                    yield ("\n" if answer else "") + f"⚠️ Gemini API 오류 ({e.code}): {e.message}"
+                    return
+                if i == len(self.models) - 1:
+                    yield ("\n" if answer else "") + "⚠️ 지금 모든 모델이 바쁘거나 무료 사용량을 초과했어요. 1분쯤 뒤에 다시 물어봐 주세요."
+                    return
+                if answer:  # 답하던 도중 끊겼으면 처음부터 다시
+                    yield f"\n↻ 응답이 끊겨서 다시 답할게요 ({self.models[i + 1]})\n"
 
         for call in calls:
             result = self.run_action(call.name, dict(call.args or {}))

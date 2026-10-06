@@ -92,6 +92,53 @@ def test_function_call_executes_without_second_llm_call(settings):
     assert schedule_db.get_schedule(settings.schedule_db, sid)["is_completed"] == 1
 
 
+def busy_client(behaviors):
+    """모델 이름별 동작: 'busy' 면 503, 'cut' 이면 글자 조금 보내고 503, 문자열이면 그 답변."""
+    from google.genai import errors
+    tried = []
+
+    def stream(model, **kwargs):
+        tried.append(model)
+        b = behaviors[model]
+        if b in ("busy", "cut"):
+            if b == "cut":
+                yield chunk("- D-1 | 10/07")
+            raise errors.ServerError(503, {"error": {"code": 503, "message": "high demand"}})
+        yield chunk(b)
+    return SimpleNamespace(models=SimpleNamespace(generate_content_stream=stream)), tried
+
+
+def test_fallback_to_next_model_on_503(settings):
+    client, tried = busy_client({"m1": "busy", "m2": "답변"})
+    bot = ScheduleAssistant(settings, client=client, model="m1")
+    bot.models = ["m1", "m2"]
+    assert "".join(bot.ask("이번 주?")) == "답변"
+    assert tried == ["m1", "m2"] and bot.last_model == "m2"
+
+
+def test_fallback_after_partial_answer_restarts(settings):
+    client, _ = busy_client({"m1": "cut", "m2": "전체 답변"})
+    bot = ScheduleAssistant(settings, client=client, model="m1")
+    bot.models = ["m1", "m2"]
+    out = "".join(bot.ask("이번 주?"))
+    assert "응답이 끊겨서 다시 답할게요 (m2)" in out and out.endswith("전체 답변")
+    assert bot.history[-1].parts[0].text == "전체 답변"  # 기록엔 끊긴 답 대신 완성된 답만
+
+
+def test_all_models_busy(settings):
+    client, tried = busy_client({"m1": "busy", "m2": "busy"})
+    bot = ScheduleAssistant(settings, client=client, model="m1")
+    bot.models = ["m1", "m2"]
+    assert "모든 모델이 바쁘거나" in "".join(bot.ask("이번 주?"))
+    assert tried == ["m1", "m2"] and bot.history == []
+
+
+def test_fallback_models_from_env(settings, monkeypatch):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "a, b,a")
+    bot = ScheduleAssistant(settings, client=fake_client([])[0], model="a")
+    assert bot.models == ["a", "b"]
+
+
 def test_actions_add_update_delete_and_bad_date(settings):
     bot = ScheduleAssistant(settings, client=fake_client([])[0])
     assert "추가함" in bot.run_action("add_schedule", {"title": "중간고사", "due_at": "2026-10-20 10:00"})
