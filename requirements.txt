@@ -1,0 +1,6 @@
+canvasapi>=3.3
+python-dotenv>=1.0
+apscheduler>=3.10,<4
+beautifulsoup4>=4.12
+tzdata  # Windows 에서 zoneinfo('Asia/Seoul') 사용
+pytest>=8
