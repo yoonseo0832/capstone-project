@@ -211,5 +211,4 @@ python -m lms sync && python -m lms raw
 ## 9. 남은 일 / 정해야 할 것
 - [ ] 다른 크롤러와 합치기: `upsert_by_source` 로 `schedules` 에 넣기만 하면 됨 (4장)
 - [ ] 개수 질문 정확도 개선 (7장)
-- [ ] `Dockerfile` / `docker-compose.yml` 은 **이전 구조(Gemini CLI) 용**이라 현재 동작하지 않음 — 쓸지 정하고 고치거나 삭제
 - [ ] 정식 서비스로 간다면: 사용자별 LMS 토큰 입력(또는 학교에 OAuth Developer Key 요청), 토큰 암호화 저장, `schedules` 에 `user_id` 추가 — **캡스톤 시연 범위에서는 하지 않음**
