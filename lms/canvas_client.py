@@ -14,6 +14,7 @@ from canvasapi.exceptions import CanvasException
 log = logging.getLogger(__name__)
 
 SUBMITTED_STATES = {"submitted", "graded", "pending_review"}
+REQUEST_TIMEOUT = 30  # 초 (연결, 응답 각각)
 
 
 def to_local(iso: str | None, tz: str) -> str | None:
@@ -68,6 +69,15 @@ class CanvasClient:
         self.base_url = base_url.rstrip("/")
         self.tz = tz
         self._canvas = Canvas(self.base_url, api_key)
+        # canvasapi 는 timeout 없이 요청해서, 절전 해제 직후처럼 네트워크가 불안정하면 무한 대기한다
+        # (2026-10-07 10:23 수집이 이렇게 멈춤). 내부 세션에 기본 timeout 을 건다.
+        session = self._canvas._Canvas__requester._session
+        original = session.request
+
+        def request_with_timeout(*args, **kwargs):
+            kwargs.setdefault("timeout", REQUEST_TIMEOUT)
+            return original(*args, **kwargs)
+        session.request = request_with_timeout
 
     def course_url(self, course_id: int) -> str:
         return f"{self.base_url}/courses/{course_id}"

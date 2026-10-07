@@ -108,7 +108,7 @@ def test_submission_marks_completed_and_cleanup(settings):
     sync_lms(settings, client=client)
     assert schedule_db.get_by_source(settings.schedule_db, "lms", "assignment:10")["is_completed"] == 1
 
-    removed = cleanup(settings)
+    removed = cleanup(settings, client=client)
     assert len(removed) == 1
     assert raw_db.get_item(settings.lms_raw_db, "assignment:10")["is_done"] == 1
 
@@ -125,7 +125,7 @@ def test_manual_done_not_overwritten_and_not_revived(settings):
     sync_lms(settings, full=True, client=FakeClient([assignment(10)]))  # 미제출 상태로 다시 수집
     assert schedule_db.get_schedule(settings.schedule_db, row["id"])["is_completed"] == 1
 
-    cleanup(settings)
+    cleanup(settings, check_submissions=False)
     sync_lms(settings, full=True, client=FakeClient([assignment(10)]))
     assert schedule_db.list_schedules(settings.schedule_db) == []
 
@@ -136,3 +136,84 @@ def test_user_url_adds_course(settings):
     raw_db.add_url(settings.lms_raw_db, f"{BASE}/courses/777/assignments", "user")
     raw_db.add_url(settings.lms_raw_db, "https://other.site/courses/5", "user")
     assert user_course_ids(settings) == [777]
+
+
+# ---------------------------------------------------------------- 자정 삭제 전 제출 확인
+
+@pytest.fixture
+def fake_now(monkeypatch):
+    """lms.sync 안의 '현재 시각'을 원하는 값으로 고정."""
+    import lms.sync as sync_mod
+    from datetime import datetime as real_dt
+
+    class FakeNow(real_dt):
+        current = real_dt(2026, 10, 7, 7, 0)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.replace(tzinfo=tz)
+
+    monkeypatch.setattr(sync_mod, "datetime", FakeNow)
+    return FakeNow
+
+
+SUBMITTED = {"workflow_state": "submitted", "submitted_at": "2026-10-07T06:00:00Z"}
+DUE_1007 = "2026-10-07T14:59:00Z"  # KST 10/07 23:59
+
+
+def test_cleanup_checks_submission_then_deletes_same_night(settings, fake_now):
+    """10/07 07:00 미제출 수집 → 오후에 제출 → 10/08 00:00 자정 작업이 제출 확인 후 바로 삭제."""
+    sync_lms(settings, client=FakeClient([assignment(15, due=DUE_1007)]))
+    assert schedule_db.get_by_source(settings.schedule_db, "lms", "assignment:15")["is_completed"] == 0
+
+    fake_now.current = fake_now(2026, 10, 8, 0, 0)  # 마감(23:59) 지난 직후
+    removed = cleanup(settings, client=FakeClient([assignment(15, due=DUE_1007, submission=SUBMITTED)]))
+    assert [r["source_id"] for r in removed] == ["assignment:15"]
+    assert raw_db.get_item(settings.lms_raw_db, "assignment:15")["is_done"] == 1
+
+
+def test_submitted_after_due_marks_completed_on_next_sync(settings, fake_now):
+    """마감 지난 뒤 수집이어도 이미 일정에 있는 과제는 제출 → 완료 반영 (이전 버그)."""
+    sync_lms(settings, client=FakeClient([assignment(15, due=DUE_1007)]))
+    fake_now.current = fake_now(2026, 10, 8, 7, 0)
+    sync_lms(settings, client=FakeClient([assignment(15, due=DUE_1007, submission=SUBMITTED)]))
+    assert schedule_db.get_by_source(settings.schedule_db, "lms", "assignment:15")["is_completed"] == 1
+
+
+def test_past_due_not_submitted_is_still_not_added(settings, fake_now):
+    """버그 수정이 '마감 지난 새 과제는 안 올린다' 규칙을 깨지 않는지."""
+    fake_now.current = fake_now(2026, 10, 8, 7, 0)
+    sync_lms(settings, client=FakeClient([assignment(15, due=DUE_1007)]))
+    assert schedule_db.get_by_source(settings.schedule_db, "lms", "assignment:15") is None
+
+
+def test_cleanup_still_deletes_when_canvas_check_fails(settings, monkeypatch):
+    schedule_db.init_db(settings.schedule_db)
+    sid = schedule_db.add_schedule(settings.schedule_db, "직접 추가한 일정")
+    schedule_db.set_completed(settings.schedule_db, sid)
+
+    class BrokenClient(FakeClient):
+        def get_courses(self, extra_ids=()):
+            raise ConnectionError("network down")
+
+    import lms.sync as sync_mod
+    monkeypatch.setattr(sync_mod, "RETRY_WAIT", 0)
+    removed = cleanup(settings, client=BrokenClient([]))
+    assert [r["id"] for r in removed] == [sid]
+
+
+def test_retry_course_after_timeout(settings, monkeypatch):
+    import lms.sync as sync_mod
+    monkeypatch.setattr(sync_mod, "RETRY_WAIT", 0)
+
+    class FlakyClient(FakeClient):
+        calls = 0
+
+        def iter_assignments(self, course):
+            FlakyClient.calls += 1
+            if FlakyClient.calls == 1:
+                raise TimeoutError("read timed out")
+            yield from super().iter_assignments(course)
+
+    r = sync_lms(settings, client=FlakyClient([assignment(10)]))
+    assert FlakyClient.calls == 2 and r.errors == [] and r.new == 1

@@ -25,7 +25,7 @@ Gemini API로 "이번 주 마감 뭐 있어?" 같은 질문에 **1~2초 안에**
                                                                  ▼
                                                schedule.db / schedules  ◀── 팀 공유
                                                                  │
-                         (매일 00:00) 완료된 일정 삭제 ◀──────────┤
+     (매일 00:00) Canvas 제출 확인 → 완료된 일정 삭제 ◀──────────┤
                                                                  ▼
                                     assistant (Gemini API) ── "이번 주 마감?" → 1~2초 답변
 ```
@@ -138,8 +138,8 @@ schedule_db.delete_schedule(DB, schedule_id)
 | [config.py](lms/config.py) | `.env` 에서 키·DB 경로·스케줄 시간을 읽음 | 키를 코드에 쓰지 않기 위해. 경로·시간을 코드 수정 없이 바꿀 수 있고, 테스트에서는 임시 경로를 넘긴다 |
 | [canvas_client.py](lms/canvas_client.py) | Canvas API로 강의·과제·제출 상태를 받아 dict 로 정규화 | Canvas 는 시간을 **UTC** 로 줘서 한국 시간으로 변환한다 (이전 코드는 변환이 없어서 9시간 차이 났음). 본문 HTML에서 텍스트와 링크를 분리 저장. 다른 코드는 Canvas 라이브러리를 몰라도 되도록 여기서만 Canvas 를 다룬다 → 테스트에서 가짜 클라이언트로 바꿔 끼울 수 있다 |
 | [raw_db.py](lms/raw_db.py) | LMS 원본 DB: `raw_items`(본문, HTML, 링크, 추출 링크, **해시**, 제출 여부), `source_urls`(강의 URL + 사용자 URL) | 요구사항 "원본 데이터 저장 [내용, 링크, 해시]". 해시(SHA-256)는 제목·본문·마감·링크로 만들어서 **내용이 바뀐 과제만** 공유 테이블에 반영한다. 제출 여부는 해시에서 빼고 따로 비교 (제출은 "내용 변경"이 아니라 "완료"이므로) |
-| [sync.py](lms/sync.py) | 수집 → 원본 저장 → 해시 비교 → 필요한 것만 일정 반영 / 자정 정리 | 일정 테이블은 **신규·내용 변경·제출 상태 변경**일 때만 건드린다 → 사용자가 지운 일정이 매일 아침 되살아나지 않는다. 마감 지난 과제·마감 없는 과제는 일정에서 빼고 원본에만 저장(`.env` 로 변경 가능). 강의 하나가 에러 나도 나머지는 계속 수집 |
-| [scheduler.py](lms/scheduler.py) | 매일 07:00 수집, 00:00 완료 일정 삭제 | 요구사항 "아침에 한 번씩", "12시쯤 완료 과제 삭제". APScheduler 로 파이썬 하나만 띄우면 돼서 Windows/Linux 동일하게 동작. PC가 꺼져 있다 켜져도 1시간 안이면 밀린 작업 실행 |
+| [sync.py](lms/sync.py) | 수집 → 원본 저장 → 해시 비교 → 필요한 것만 일정 반영 / 자정 정리 | 일정 테이블은 **신규·내용 변경·제출 상태 변경**일 때만 건드린다 → 사용자가 지운 일정이 매일 아침 되살아나지 않는다. 마감 지난 과제·마감 없는 과제는 **새로 올리지 않고** 원본에만 저장(`.env` 로 변경 가능). 단 이미 일정에 있는 과제는 마감이 지나도 제출 → 완료가 반영된다 (마감 당일 제출 대응). **자정 정리는 Canvas 제출 여부를 먼저 확인한 뒤 삭제** → 그날 낸 과제가 그날 밤 정리된다 (확인 실패해도 삭제는 진행). 네트워크 오류는 20초 간격 3회 재시도, 그래도 실패한 강의만 건너뜀 |
+| [scheduler.py](lms/scheduler.py) | 매일 07:00 수집, 00:00 완료 일정 삭제 (상주 프로세스 방식) | 터미널에 띄워두는 방식. **현재 내 PC는 Windows 작업 스케줄러에 등록해서 사용** (아래 6장) — 둘 다 켜면 두 번 실행되므로 하나만 쓸 것 |
 | [\_\_main\_\_.py](lms/__main__.py) | CLI: `sync`, `list`, `add`, `edit`, `done`, `delete`, `cleanup`, `url`, `raw`, `scheduler` | DB 를 직접 열지 않고 확인·수정·시연할 수 있게 |
 
 ### `assistant/` — 시연용 답변 비서
@@ -152,7 +152,7 @@ schedule_db.delete_schedule(DB, schedule_id)
 ### 기타
 | 파일 | 하는 일 |
 |---|---|
-| [tests/](tests/) | pytest 20개. 가짜 Canvas·가짜 Gemini 로 **API 키 없이** 돌아간다 (중복 방지, 해시 변경 감지, 완료→삭제→재등록 방지, 함수 호출 등) |
+| [tests/](tests/) | pytest 25개. 가짜 Canvas·가짜 Gemini 로 **API 키 없이** 돌아간다 (중복 방지, 해시 변경 감지, 완료→삭제→재등록 방지, 함수 호출 등) |
 | [.env.example](.env.example) | `.env` 템플릿 (실제 키는 넣지 않음) |
 | [requirements.txt](requirements.txt) | 의존성 |
 
@@ -161,7 +161,11 @@ schedule_db.delete_schedule(DB, schedule_id)
 ## 6. 동작 규칙 요약
 - 해시가 같으면(내용 그대로면) 일정 테이블을 건드리지 않는다
 - Canvas 에서 **제출됨** → 일정 자동 완료 처리
-- 매일 **00:00** 완료 일정 삭제 → LMS 항목은 원본 DB에 `is_done=1` → 다음 수집 때 재등록 안 됨
+- 매일 **00:00**: Canvas 에서 제출 여부 확인 → 완료 표시 → 완료 일정 삭제 → LMS 항목은 원본 DB에 `is_done=1` → 다음 수집 때 재등록 안 됨
+  (예: 10/07 오후 제출 → 10/08 00:00 에 바로 삭제. 수동 완료 처리 필요 없음)
+- Canvas 요청은 30초 timeout (라이브러리 기본값은 무제한이라 절전 해제 직후 수집이 멈춘 적 있음)
+- **자동 실행 (Windows 작업 스케줄러)**: `Capstone LMS Sync` 매일 07:00 `python -m lms sync`, `Capstone LMS Cleanup` 매일 00:00 `python -m lms cleanup`.
+  PC가 꺼져/절전 중이었으면 켜진 뒤 바로 실행. Windows 로그인 상태에서만 실행. 기록: `workspace/data/lms_tasks.log`
 - 마감 지난 과제·마감 없는 과제는 일정에 안 올림 (원본엔 저장) — `.env` 의 `LMS_SKIP_PAST_DUE`, `LMS_INCLUDE_NO_DUE`
 - 사용자가 추가한 URL이 이 LMS의 `/courses/<id>` 면 그 강의도 수집 (`python -m lms url add ...`)
 

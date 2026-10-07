@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -15,6 +16,8 @@ log = logging.getLogger(__name__)
 
 SOURCE = "lms"
 COURSE_URL_RE = re.compile(r"/courses/(\d+)")
+RETRY_ATTEMPTS = 3
+RETRY_WAIT = 20  # 초
 
 
 @dataclass
@@ -80,7 +83,10 @@ def sync_items(settings: Settings, items, full: bool = False, result: SyncResult
         if prev is not None and prev["is_done"]:
             result.skipped += 1
             continue
-        if not _should_schedule(item, settings, now):
+        # 마감 지남/마감 없음 필터는 '새로 올릴지' 판단에만 쓴다. 이미 일정에 있는 과제는
+        # 마감 지난 뒤(예: 자정 확인)에도 제출 → 완료 처리가 반영돼야 한다.
+        in_schedule = schedule_db.get_by_source(settings.schedule_db, SOURCE, item["source_id"]) is not None
+        if not in_schedule and not _should_schedule(item, settings, now):
             result.skipped += 1
             continue
         if not (full or status != "unchanged" or submit_changed):
@@ -108,23 +114,47 @@ def sync_lms(settings: Settings, full: bool = False, client=None) -> SyncResult:
 
     init_all(settings)
     result = SyncResult()
-    for course in client.get_courses(user_course_ids(settings)):
+    courses = _retry(lambda: client.get_courses(user_course_ids(settings)), "강의 목록")
+    for course in courses:
         result.courses += 1
         url = client.course_url(course["id"])
         raw_db.add_url(settings.lms_raw_db, url, kind="lms_course", label=course["name"])
         try:
-            sync_items(settings, client.iter_assignments(course), full=full, result=result)
+            # 강의 단위로 재시도 (같은 과제를 다시 저장해도 해시가 같아서 중복 반영 안 됨)
+            _retry(lambda: sync_items(settings, client.iter_assignments(course), full=full, result=result),
+                   f"강의 {course['name']}")
             raw_db.touch_url(settings.lms_raw_db, url)
-        except Exception as e:  # 강의 하나 실패해도 나머지는 계속
+        except Exception as e:  # 재시도해도 실패한 강의는 건너뛰고 나머지는 계속
             log.exception("강의 %s(%s) 수집 실패", course["name"], course["id"])
             result.errors.append(f"{course['name']}: {e}")
     log.info("LMS 동기화 완료: %s", result)
     return result
 
 
-def cleanup(settings: Settings) -> list[dict]:
-    """완료된 일정 삭제 (매일 자정 실행). LMS 출처 항목은 원본 DB에 완료 표시."""
+def _retry(fn, what: str, attempts: int = RETRY_ATTEMPTS):
+    """네트워크 오류(타임아웃 등)는 RETRY_WAIT 초 쉬고 다시 시도."""
+    for i in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if i == attempts:
+                raise
+            log.warning("%s 실패 (%d/%d): %s → %d초 후 재시도", what, i, attempts, e, RETRY_WAIT)
+            time.sleep(RETRY_WAIT)
+
+
+def cleanup(settings: Settings, check_submissions: bool = True, client=None) -> list[dict]:
+    """완료된 일정 삭제 (매일 자정 실행). LMS 출처 항목은 원본 DB에 완료 표시.
+
+    삭제 전에 Canvas 에서 제출 여부를 먼저 확인한다 → 그날 낸 과제가 그날 자정에 바로 정리된다.
+    확인이 실패해도(네트워크 등) 이미 완료로 표시된 일정은 그대로 삭제한다.
+    """
     init_all(settings)
+    if check_submissions:
+        try:
+            sync_lms(settings, client=client)
+        except Exception:
+            log.exception("삭제 전 제출 확인 실패 → 이미 완료된 일정만 삭제")
     removed = schedule_db.cleanup_completed(settings.schedule_db)
     lms_ids = [r["source_id"] for r in removed if r["source"] == SOURCE and r["source_id"]]
     if lms_ids:
