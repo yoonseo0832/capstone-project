@@ -100,6 +100,17 @@ def list_items(path) -> list[dict]:
         return [dict(r) for r in conn.execute("SELECT * FROM raw_items ORDER BY due_at IS NULL, due_at")]
 
 
+def list_announcements(path, limit: int = 15) -> list[dict]:
+    """게시판 공지를 최근 수집 순으로. 답변용 컨텍스트에 넣기 위한 조회."""
+    with connect(path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM raw_items WHERE item_type = 'announcement' AND is_done = 0 "
+            "ORDER BY fetched_at DESC, id DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in rows]
+
+
 def save_item(path, item: dict) -> str:
     """원본 저장(upsert). 반환: 'new' | 'changed' | 'unchanged'.
     제출 여부만 바뀐 경우는 'unchanged' 지만 submitted 컬럼은 갱신된다."""

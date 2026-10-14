@@ -6,13 +6,17 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from datetime import datetime, timedelta
 
 from common import schedule_db
+from lms import raw_db
 
 WEEKDAYS = "월화수목금토일"
 MAX_ROWS = 80
 MAX_DESC = 100
+MAX_NOTICES = 15       # 프롬프트에 넣을 공지 최대 건수 (무료 티어라 길이 제한)
+MAX_NOTICE_DESC = 200  # 공지 본문은 시험 날짜 등 세부가 중요해 과제보다 길게
 
 
 def split_course(content: str | None) -> tuple[str | None, str]:
@@ -68,8 +72,11 @@ def week_tag(due_at: str | None, now: datetime) -> str:
     return "이후"
 
 
-def build_context(db_path, now: datetime | None = None) -> str:
-    """작은 모델이 날짜 계산을 자주 틀리므로 요일·D-day·주 구분을 전부 미리 계산해서 넣는다."""
+def build_context(db_path, now: datetime | None = None, raw_db_path=None) -> str:
+    """작은 모델이 날짜 계산을 자주 틀리므로 요일·D-day·주 구분을 전부 미리 계산해서 넣는다.
+
+    raw_db_path 를 주면 게시판 공지도 [공지] 섹션으로 붙인다(시험·공지 질문 답변용).
+    """
     now = now or datetime.now()
     rows = schedule_db.list_schedules(db_path, include_completed=True)[:MAX_ROWS]
     lines = [f"현재 시각: {now:%Y-%m-%d %H:%M} ({WEEKDAYS[now.weekday()]})",
@@ -85,4 +92,24 @@ def build_context(db_path, now: datetime | None = None) -> str:
         ]))
     if not rows:
         lines.append("(등록된 일정 없음)")
+    if raw_db_path is not None:
+        lines += notice_lines(raw_db_path)
     return "\n".join(lines)
+
+
+def notice_lines(raw_db_path) -> list[str]:
+    """게시판 공지를 '[공지]' 섹션 텍스트로. 마감이 없으므로 과목·제목·본문·링크만 넣는다."""
+    try:
+        notices = raw_db.list_announcements(raw_db_path, limit=MAX_NOTICES)
+    except sqlite3.OperationalError:
+        return []  # 아직 수집 전이라 raw_items 테이블이 없는 경우
+    if not notices:
+        return []
+    out = ["", f"[공지] 게시판/공지사항 {len(notices)}건. 형식: 과목 | 제목 | 내용 | 링크"]
+    for n in notices:
+        desc = re.sub(r"\s+", " ", n["content"] or "")[:MAX_NOTICE_DESC]
+        out.append(" | ".join([
+            short_course(n["course_name"] or "-"),
+            n["title"], desc or "-", n["link"] or "-",
+        ]))
+    return out
