@@ -9,6 +9,34 @@ Gemini API로 "이번 주 마감 뭐 있어?" 같은 질문에 **1~2초 안에**
 
 ---
 
+## 0. 한눈에 — 기능 · 실행
+
+### 기능
+- **LMS 과제 수집**: Canvas API로 강의·과제·제출상태를 받아 **공유 일정 DB**에 반영 (매일 07:00 자동)
+- **공지 수집**: Canvas Announcements + 학교 LMS의 **Board(LearningX) 게시판** 공지(중간/기말고사 안내 등)
+- **답변 비서(Gemini)**: "이번 주 마감?", "중간고사 언제야?" 등에 1~2초 답변. 완료/추가/수정/삭제도 말로 처리
+- **자동 정리**: 매일 00:00 제출 확인 후 완료 일정 삭제
+- **텔레그램 봇**: 위 기능을 채팅으로. 아침 브리핑(마감+새 공지) / 마감 N시간 전 알림 자동 발송
+
+### 실행
+```bash
+python -m venv .venv && .venv\Scripts\activate       # (macOS/Linux: source .venv/bin/activate)
+pip install -r requirements.txt
+cp .env.example .env                                  # 키·토큰 입력 (아래 3장)
+```
+| 하고 싶은 것 | 명령 |
+|---|---|
+| LMS·공지 지금 수집 | `python -m lms sync` |
+| 공유 일정 확인 | `python -m lms list` |
+| 비서와 대화 (CLI) | `python -m assistant` |
+| 텔레그램 봇 실행 | `python -m telegram_bot` |
+| 자동 수집/정리 상주 실행 | `python -m lms scheduler` (또는 Windows 작업 스케줄러, 6장) |
+| 테스트 | `pytest -q` |
+
+> ⚠️ 반드시 `.venv` 가 활성화된 상태에서 실행 (`python-telegram-bot` 등 의존성이 거기 설치됨).
+
+---
+
 ## 1. 담당 범위
 
 | 구분 | 내용 |
@@ -262,7 +290,23 @@ export SCHEDULE_DB_PATH=workspace/data/test_schedule.db LMS_RAW_DB_PATH=workspac
 python -m lms sync && python -m lms raw
 ```
 
-## 9. 남은 일 / 정해야 할 것
-- [ ] 다른 크롤러와 합치기: `upsert_by_source` 로 `schedules` 에 넣기만 하면 됨 (4장)
-- [ ] 개수 질문 정확도 개선 (7장)
-- [ ] 정식 서비스로 간다면: 사용자별 LMS 토큰 입력(또는 학교에 OAuth Developer Key 요청), 토큰 암호화 저장, `schedules` 에 `user_id` 추가 — **캡스톤 시연 범위에서는 하지 않음**
+## 9. 개발 현황 · 남은 일 · 팀 통합
+
+### ✅ 현재까지 개발된 것
+- **LMS 과제 수집** → 공유 일정 DB (`upsert_by_source`), 해시 기반 변경 감지, 사용자 추가 URL 강의 수집
+- **자동 스케줄**: 매일 07:00 수집 / 00:00 제출 확인 후 완료 일정 삭제 (Windows 작업 스케줄러 등록)
+- **공지 수집**: Canvas Announcements + **LearningX Board 게시판**(게시판형/글형 둘 다, 중간/기말고사 안내 포함)
+- **답변 비서(Gemini)**: 일정·공지 질문 답변, 완료/추가/수정/삭제 함수 호출, 모델 자동 전환(fallback)
+- **텔레그램 봇**: 자유 질문 + `/today`·`/week`·`/notice`·`/sync`, 아침 브리핑(마감+새 공지), 마감 알림, 재시작 도배 방지
+- **테스트 43개** (가짜 Canvas·Gemini·텔레그램으로 키 없이 실행)
+
+### ⏳ 남은 개발
+- [ ] **팀원 크롤러 병합** (아래 참고) — 예정
+- [ ] 개수 질문("몇 개야?") 정확도 개선: 과목별·월별 개수를 코드가 미리 계산해 프롬프트에 넣기 (7장)
+- [ ] 공지 정리: LMS에서 사라진 공지/게시판이 `raw_items` 에 남는 문제(현재 무해하나 누적) — 자정 정리에 공지도 포함
+- [ ] LearningX 는 비공식 API라 LMS 업데이트 시 점검 필요 (실패해도 과제·Canvas 공지는 계속되도록 이미 분리)
+- [ ] 정식 서비스로 간다면: 사용자별 LMS 토큰 입력(또는 학교 OAuth Developer Key), 토큰 암호화 저장, `schedules` 에 `user_id` 추가 — **캡스톤 시연 범위에서는 하지 않음**
+
+### 🤝 팀원 크롤러 병합 (예정)
+팀원이 담당하는 **다른 사이트 크롤러**(학과 공지 등)를 이 시스템에 합칠 예정이다. 구조상 **추가 작업이 거의 없다**:
+크롤러가 수집한 일정을 [common/schedule_db.py](common/schedule_db.py) `upsert_by_source(source="crawler:<사이트>", ...)` 로 **공유 `schedules` 테이블에 넣기만 하면** 비서·봇이 자동으로 함께 답한다 (넣는 법은 4장). 원본 데이터는 크롤러가 자기 DB에 두고, 공유 테이블에는 일정만 올린다. 완료 일정 자정 삭제·재등록 방지도 동일하게 적용된다.
