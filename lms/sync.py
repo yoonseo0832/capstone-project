@@ -28,11 +28,19 @@ class SyncResult:
     changed: int = 0
     scheduled: int = 0   # 일정 테이블에 추가/갱신된 수
     skipped: int = 0     # 마감 지남/마감 없음/이미 완료 처리 등으로 일정에 안 올린 수
+    notices: int = 0     # 수집한 공지(Canvas Announcements) 수
+    notices_new: int = 0 # 그중 새로 저장된 공지 수
+    lx_notices: int = 0  # 수집한 게시판 공지(LearningX Board) 수
+    lx_new: int = 0      # 그중 새로 저장된 수
     errors: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
         s = (f"강의 {self.courses}개, 과제 {self.fetched}개 수집 "
              f"(신규 {self.new}, 변경 {self.changed}) → 일정 반영 {self.scheduled}, 제외 {self.skipped}")
+        if self.notices:
+            s += f", 공지 {self.notices}개(신규 {self.notices_new})"
+        if self.lx_notices:
+            s += f", 게시판 {self.lx_notices}개(신규 {self.lx_new})"
         if self.errors:
             s += f", 에러 {len(self.errors)}건"
         return s
@@ -104,6 +112,44 @@ def sync_items(settings: Settings, items, full: bool = False, result: SyncResult
     return result
 
 
+def sync_notices(settings: Settings, items, result: SyncResult | None = None) -> SyncResult:
+    """Canvas 공지를 원본 DB(raw_items)에만 저장한다. 마감이 없어 일정 테이블에는 올리지 않는다."""
+    result = result or SyncResult()
+    for item in items:
+        result.notices += 1
+        if raw_db.save_item(settings.lms_raw_db, item) == "new":
+            result.notices_new += 1
+    return result
+
+
+def sync_board_notices(settings: Settings, items, result: SyncResult | None = None) -> SyncResult:
+    """LearningX 게시판 공지를 원본 DB(raw_items)에만 저장한다."""
+    result = result or SyncResult()
+    for item in items:
+        result.lx_notices += 1
+        if raw_db.save_item(settings.lms_raw_db, item) == "new":
+            result.lx_new += 1
+    return result
+
+
+def collect_learningx(settings: Settings, client, courses, result: SyncResult) -> None:
+    """Board(LearningX) 게시판 공지를 과목별로 수집. 과제/Canvas공지와 독립적으로 동작하고
+    실패해도(비공식 API·네트워크) 전체 수집을 멈추지 않는다."""
+    try:
+        from lms.learningx import LearningXClient
+        lx = LearningXClient(client)
+    except Exception as e:  # FakeClient 등 Canvas 세션이 없는 경우 포함
+        log.warning("LearningX 초기화 실패 → 게시판 수집 건너뜀: %s", e)
+        return
+    for course in courses:
+        try:
+            _retry(lambda: sync_board_notices(settings, lx.iter_notices(course), result),
+                   f"강의 {course['name']} 게시판")
+        except Exception as e:
+            log.exception("강의 %s 게시판(LearningX) 수집 실패", course.get("name"))
+            result.errors.append(f"{course['name']} 게시판: {e}")
+
+
 def sync_lms(settings: Settings, full: bool = False, client=None) -> SyncResult:
     """Canvas 에서 과제를 받아와 동기화 (매일 아침 실행)."""
     if client is None:
@@ -127,6 +173,19 @@ def sync_lms(settings: Settings, full: bool = False, client=None) -> SyncResult:
         except Exception as e:  # 재시도해도 실패한 강의는 건너뛰고 나머지는 계속
             log.exception("강의 %s(%s) 수집 실패", course["name"], course["id"])
             result.errors.append(f"{course['name']}: {e}")
+
+        # 공지 수집은 과제와 독립적으로 (공지가 실패해도 과제 결과는 유지)
+        if hasattr(client, "iter_announcements"):
+            try:
+                _retry(lambda: sync_notices(settings, client.iter_announcements(course), result),
+                       f"강의 {course['name']} 공지")
+            except Exception as e:
+                log.exception("강의 %s(%s) 공지 수집 실패", course["name"], course["id"])
+                result.errors.append(f"{course['name']} 공지: {e}")
+
+    # Board(LearningX) 게시판 공지 — Canvas API 밖이라 별도 경로로, 전부 끝낸 뒤 한 번에
+    if settings.collect_learningx:
+        collect_learningx(settings, client, courses, result)
     log.info("LMS 동기화 완료: %s", result)
     return result
 

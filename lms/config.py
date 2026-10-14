@@ -27,6 +27,7 @@ class Settings:
     cleanup_time: str      # 매일 완료 일정 삭제 시각 HH:MM
     include_no_due: bool   # 마감일 없는 과제도 일정에 올릴지
     skip_past_due: bool    # 이미 마감 지난 과제는 일정에 올리지 않을지
+    collect_learningx: bool = True  # Board(LearningX) 게시판 공지도 수집할지 (비공식 API)
 
 
 def _bool(env_name: str, default: bool) -> bool:
@@ -44,4 +45,5 @@ def load_settings() -> Settings:
         cleanup_time=os.environ.get("CLEANUP_TIME", "00:00"),
         include_no_due=_bool("LMS_INCLUDE_NO_DUE", False),
         skip_past_due=_bool("LMS_SKIP_PAST_DUE", True),
+        collect_learningx=_bool("LMS_COLLECT_LEARNINGX", True),
     )

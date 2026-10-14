@@ -24,7 +24,7 @@ DEFAULT_FALLBACKS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"]
 RETRY_CODES = {429, 500, 503, 504}
 MAX_HISTORY = 10  # 기억할 최근 대화 턴 수 (user+model 쌍)
 
-SYSTEM_RULES = """당신은 대학생의 일정 관리 비서입니다. 아래 [일정] 데이터만 근거로 한국어로 짧고 명확하게 답합니다.
+SYSTEM_RULES = """당신은 대학생의 일정 관리 비서입니다. 아래 [일정]과 [공지] 데이터를 근거로 한국어로 짧고 명확하게 답합니다.
 
 규칙:
 - 일정을 알려줄 때는 마감 임박 순으로 한 줄에 하나씩 씁니다. 예: `- D-7 | 10/13(화) 23:59 | 빅데이터개론 | Week 04 Lab | https://...`
@@ -32,7 +32,10 @@ SYSTEM_RULES = """당신은 대학생의 일정 관리 비서입니다. 아래 [
 - 형식 설명이나 머리글 줄은 출력하지 말고 바로 답합니다.
 - '이번 주'/'다음 주' 질문에는 '주' 칸이 '이번주'/'다음주'인 일정만 답합니다.
 - 별도 요청이 없으면 완료된 일정과 마감 지난 일정은 빼고 말합니다.
-- 데이터에 없는 일정은 지어내지 말고 없다고 말합니다.
+- 시험(중간/기말)·공지·안내처럼 마감이 없는 질문에는 [공지] 데이터를 근거로 답하고, 관련 공지의 링크를 함께 보여줍니다. 시험 날짜·장소는 공지 본문에 적힌 값만 사용합니다.
+- 공지 '내용'을 묻거나(예: "그 공지 내용 알려줘", "무슨 공지야?") 특정 공지를 짚어 물으면, [공지]의 '내용' 칸을 바탕으로 핵심을 2~4줄로 요약해 알려주고 링크를 붙입니다. 제목·링크만 나열하지 마세요. 내용 칸이 잘려 세부가 없으면 링크에서 전체를 확인하라고 안내합니다.
+- 공지나 일정을 '조회/검색'하는 함수는 없습니다. search_notices 같은 함수를 지어내 호출하지 말고, 이미 주어진 [일정]·[공지] 데이터에서 직접 찾아 글로 답하세요. 함수는 완료/추가/수정/삭제/LMS 새로고침일 때만 호출합니다.
+- 데이터에 없는 일정·공지는 지어내지 말고 없다고 말합니다.
 - 사용자가 완료/추가/수정/삭제를 요청하면 해당 함수를 호출합니다. 날짜는 'YYYY-MM-DD HH:MM'으로 변환합니다 (시간 미지정 시 23:59).
 - 일정 추가는 제목만 있으면 바로 add_schedule 을 호출합니다 (과목 등 추가 정보를 되묻지 않음).
 - 완료/수정/삭제할 기존 일정이 여러 개 해당되거나 불분명하면 함수를 호출하지 말고 후보를 보여주며 되묻습니다.
@@ -146,7 +149,8 @@ class ScheduleAssistant:
         # 2.5 계열만 thinking 을 완전히 끌 수 있다 (3.x 에 budget=0 을 주면 400 에러)
         thinking = types.ThinkingConfig(thinking_budget=0) if "2.5" in model else None
         return types.GenerateContentConfig(
-            system_instruction=SYSTEM_RULES + "\n[일정]\n" + build_context(self.settings.schedule_db),
+            system_instruction=SYSTEM_RULES + "\n[일정]\n" + build_context(
+                self.settings.schedule_db, raw_db_path=self.settings.lms_raw_db),
             tools=[types.Tool(function_declarations=FUNCTIONS)],
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             thinking_config=thinking,
