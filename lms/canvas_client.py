@@ -64,6 +64,25 @@ def normalize_assignment(a: dict, course_id: int, course_name: str, base_url: st
     }
 
 
+def normalize_announcement(t: dict, course_id: int, course_name: str, base_url: str, tz: str) -> dict:
+    """게시판(공지) 글 → 저장용 dict. 마감/제출 개념이 없어 due_at·submitted 는 비운다."""
+    content, links = html_to_text_and_links(t.get("message"), base_url)
+    return {
+        "source_id": f"announcement:{t['id']}",
+        "item_type": "announcement",
+        "course_id": course_id,
+        "course_name": course_name,
+        "title": t.get("title") or "(제목 없음)",
+        "content": content,
+        "content_html": t.get("message") or "",
+        "link": t.get("html_url"),
+        "extracted_links": links,
+        "due_at": None,
+        "start_at": to_local(t.get("posted_at"), tz),  # 게시 시각
+        "submitted": False,
+    }
+
+
 class CanvasClient:
     def __init__(self, base_url: str, api_key: str, tz: str = "Asia/Seoul"):
         self.base_url = base_url.rstrip("/")
@@ -103,3 +122,10 @@ class CanvasClient:
         for a in c.get_assignments(include=["submission"]):
             raw = {k: v for k, v in vars(a).items() if not k.startswith("_") and k != "requester"}
             yield normalize_assignment(raw, course["id"], course["name"], self.base_url, self.tz)
+
+    def iter_announcements(self, course: dict) -> Iterator[dict]:
+        """게시판의 공지(announcement) 글을 받아온다."""
+        c = self._canvas.get_course(course["id"])
+        for t in c.get_discussion_topics(only_announcements=True):
+            raw = {k: v for k, v in vars(t).items() if not k.startswith("_") and k != "requester"}
+            yield normalize_announcement(raw, course["id"], course["name"], self.base_url, self.tz)

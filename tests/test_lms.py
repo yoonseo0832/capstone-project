@@ -2,7 +2,8 @@ import pytest
 
 from common import schedule_db
 from lms import raw_db
-from lms.canvas_client import html_to_text_and_links, normalize_assignment, to_local
+from lms.canvas_client import (html_to_text_and_links, normalize_announcement,
+                               normalize_assignment, to_local)
 from lms.config import Settings
 from lms.sync import cleanup, sync_lms
 
@@ -24,9 +25,15 @@ def assignment(aid, name="과제", due="2099-12-31T14:59:00Z", desc="<p>내용</
             "html_url": f"{BASE}/courses/1/assignments/{aid}", "submission": submission}
 
 
+def announcement(tid, title="공지", msg="<p>중간고사 10/23</p>", posted="2026-10-13T01:00:00Z"):
+    return {"id": tid, "title": title, "message": msg, "posted_at": posted,
+            "html_url": f"{BASE}/courses/1/discussion_topics/{tid}"}
+
+
 class FakeClient:
-    def __init__(self, assignments):
+    def __init__(self, assignments, announcements=()):
         self.assignments = assignments
+        self.announcements = announcements
 
     def course_url(self, cid):
         return f"{BASE}/courses/{cid}"
@@ -37,6 +44,10 @@ class FakeClient:
     def iter_assignments(self, course):
         for a in self.assignments:
             yield normalize_assignment(a, course["id"], course["name"], BASE, "Asia/Seoul")
+
+    def iter_announcements(self, course):
+        for t in self.announcements:
+            yield normalize_announcement(t, course["id"], course["name"], BASE, "Asia/Seoul")
 
 
 # ---------------------------------------------------------------- 변환
@@ -89,6 +100,25 @@ def test_sync_inserts_and_dedupes(settings):
     r = sync_lms(settings, client=client)  # 다시 돌려도 중복 X, 변경 없음
     assert (r.new, r.changed, r.scheduled) == (0, 0, 0)
     assert len(schedule_db.list_schedules(settings.schedule_db)) == 1
+
+
+def test_notices_saved_to_raw_only(settings):
+    """게시판 공지는 raw_items 에만 저장되고 일정 테이블에는 올라가지 않는다."""
+    client = FakeClient([assignment(10)], announcements=[announcement(50, title="중간고사 안내")])
+    r = sync_lms(settings, client=client)
+    assert (r.notices, r.notices_new) == (1, 1)
+
+    item = raw_db.get_item(settings.lms_raw_db, "announcement:50")
+    assert item["item_type"] == "announcement"
+    assert item["title"] == "중간고사 안내"
+    assert "중간고사" in item["content"]
+    assert item["due_at"] is None
+    # 일정 테이블에는 과제만 (공지는 제외)
+    rows = schedule_db.list_schedules(settings.schedule_db)
+    assert [row["source_id"] for row in rows] == ["assignment:10"]
+
+    r = sync_lms(settings, client=client)  # 다시 돌려도 중복 저장 안 됨
+    assert (r.notices, r.notices_new) == (1, 0)
 
 
 def test_hash_detects_content_change(settings):
