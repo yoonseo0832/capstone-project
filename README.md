@@ -234,7 +234,7 @@ schedule_db.delete_schedule(DB, schedule_id)
 ### 기타
 | 파일 | 하는 일 |
 |---|---|
-| [tests/](tests/) | pytest 43개. 가짜 Canvas·가짜 Gemini·가짜 텔레그램으로 **API 키 없이** 돌아간다 (중복 방지, 해시 변경 감지, 완료→삭제→재등록 방지, 함수 호출, 공지/게시판 수집, 봇 명령어·브리핑 등) |
+| [tests/](tests/) | pytest 46개. 가짜 Canvas·가짜 Gemini·가짜 텔레그램으로 **API 키 없이** 돌아간다 (중복 방지, 해시 변경 감지, 완료→삭제→재등록 방지, 함수 호출, 공지/게시판 수집, 사라진 공지 정리, 봇 명령어·브리핑 등) |
 | [.env.example](.env.example) | `.env` 템플릿 (실제 키는 넣지 않음) |
 | [requirements.txt](requirements.txt) | 의존성 |
 
@@ -249,6 +249,7 @@ schedule_db.delete_schedule(DB, schedule_id)
 - **자동 실행 (Windows 작업 스케줄러)**: `Capstone LMS Sync` 매일 07:00 `python -m lms sync`, `Capstone LMS Cleanup` 매일 00:00 `python -m lms cleanup`.
   PC가 꺼져/절전 중이었으면 켜진 뒤 바로 실행. Windows 로그인 상태에서만 실행. 기록: `workspace/data/lms_tasks.log`
 - 마감 지난 과제·마감 없는 과제는 일정에 안 올림 (원본엔 저장) — `.env` 의 `LMS_SKIP_PAST_DUE`, `LMS_INCLUDE_NO_DUE`
+- **공지 정리**: 수집 때 못 본 공지 = LMS 에서 사라진 것으로 보고 `raw_items` 에서 삭제. 단 **그 출처(Canvas / Board)를 모든 강의에서 빠짐없이 받았을 때만** 지운다 → 네트워크 실패로 못 받은 공지를 실수로 지우지 않음
 - 사용자가 추가한 URL이 이 LMS의 `/courses/<id>` 면 그 강의도 수집 (`python -m lms url add ...`)
 
 ## 7. LLM 선택 기록 (왜 Gemini API 직접 호출인가)
@@ -298,12 +299,12 @@ python -m lms sync && python -m lms raw
 - **공지 수집**: Canvas Announcements + **LearningX Board 게시판**(게시판형/글형 둘 다, 중간/기말고사 안내 포함)
 - **답변 비서(Gemini)**: 일정·공지 질문 답변, 완료/추가/수정/삭제 함수 호출, 모델 자동 전환(fallback)
 - **텔레그램 봇**: 자유 질문 + `/today`·`/week`·`/notice`·`/sync`, 아침 브리핑(마감+새 공지), 마감 알림, 재시작 도배 방지
-- **테스트 43개** (가짜 Canvas·Gemini·텔레그램으로 키 없이 실행)
+- **사라진 공지 정리**: LMS 에서 삭제된 공지/게시판은 수집 때 `raw_items` 에서 자동 삭제 (출처별로 빠짐없이 받았을 때만 지워 오삭제 방지)
+- **테스트 46개** (가짜 Canvas·Gemini·텔레그램으로 키 없이 실행)
 
 ### ⏳ 남은 개발
 - [ ] **팀원 크롤러 병합** (아래 참고) — 예정
 - [ ] 개수 질문("몇 개야?") 정확도 개선: 과목별·월별 개수를 코드가 미리 계산해 프롬프트에 넣기 (7장)
-- [ ] 공지 정리: LMS에서 사라진 공지/게시판이 `raw_items` 에 남는 문제(현재 무해하나 누적) — 자정 정리에 공지도 포함
 - [ ] LearningX 는 비공식 API라 LMS 업데이트 시 점검 필요 (실패해도 과제·Canvas 공지는 계속되도록 이미 분리)
 - [ ] 정식 서비스로 간다면: 사용자별 LMS 토큰 입력(또는 학교 OAuth Developer Key), 토큰 암호화 저장, `schedules` 에 `user_id` 추가 — **캡스톤 시연 범위에서는 하지 않음**
 

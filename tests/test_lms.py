@@ -168,6 +168,46 @@ def test_sync_board_notices_saves_raw_only(settings):
     assert schedule_db.list_schedules(settings.schedule_db) == []  # 일정 테이블엔 안 올라감
 
 
+def test_stale_notice_pruned_when_disappeared(settings):
+    sync_lms(settings, client=FakeClient([assignment(10)], announcements=[announcement(50)]))
+    assert raw_db.get_item(settings.lms_raw_db, "announcement:50") is not None
+    # 다음 수집에서 공지가 사라짐 → raw_items 에서 정리됨
+    r = sync_lms(settings, client=FakeClient([assignment(10)], announcements=[]))
+    assert r.pruned == 1
+    assert raw_db.get_item(settings.lms_raw_db, "announcement:50") is None
+
+
+def test_notice_not_pruned_when_fetch_fails(settings, monkeypatch):
+    import lms.sync as sync_mod
+    monkeypatch.setattr(sync_mod, "RETRY_WAIT", 0)
+    sync_lms(settings, client=FakeClient([assignment(10)], announcements=[announcement(50)]))
+
+    class NoAnnounce(FakeClient):
+        def iter_announcements(self, course):
+            raise TimeoutError("공지 서버 다운")
+
+    r = sync_lms(settings, client=NoAnnounce([assignment(10)]))
+    # 못 받은 거지 사라진 게 아니므로 삭제하지 않는다
+    assert r.canvas_notices_ok is False and r.pruned == 0
+    assert raw_db.get_item(settings.lms_raw_db, "announcement:50") is not None
+
+
+def test_prune_respects_source_flags(settings):
+    from lms.sync import SyncResult, prune_stale_notices
+    raw_db.init_db(settings.lms_raw_db)
+    for sid, itype in [("announcement:1", "announcement"), ("lxboard:2", "lx_board")]:
+        raw_db.save_item(settings.lms_raw_db, {
+            "source_id": sid, "item_type": itype, "course_id": 1, "course_name": "x",
+            "title": "t", "content": "c", "content_html": "", "link": "l",
+            "extracted_links": [], "due_at": None, "submitted": False})
+    # 둘 다 '이번에 못 봤다'(notice_ids 비움)지만 Canvas 만 완전수집 → announcement 만 삭제
+    r = SyncResult(canvas_notices_ok=True, learningx_ok=False)
+    prune_stale_notices(settings, r)
+    assert r.pruned == 1
+    assert raw_db.get_item(settings.lms_raw_db, "announcement:1") is None
+    assert raw_db.get_item(settings.lms_raw_db, "lxboard:2") is not None  # LearningX 미완료 → 보존
+
+
 def test_hash_detects_content_change(settings):
     sync_lms(settings, client=FakeClient([assignment(10)]))
     old_hash = raw_db.get_item(settings.lms_raw_db, "assignment:10")["content_hash"]

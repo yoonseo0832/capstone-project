@@ -155,3 +155,14 @@ def mark_done(path, source_ids: list[str]) -> None:
 def delete_item(path, source_id: str) -> bool:
     with connect(path) as conn:
         return conn.execute("DELETE FROM raw_items WHERE source_id = ?", (source_id,)).rowcount > 0
+
+
+def prune_items(path, item_type: str, keep_ids) -> list[str]:
+    """해당 item_type 중 keep_ids 에 없는 항목을 삭제한다 (LMS 에서 사라진 공지 정리용).
+    반환: 삭제된 source_id 목록. keep_ids 가 '이번 수집에서 본 것 전부'일 때만 호출해야 안전하다."""
+    keep = set(keep_ids)
+    with connect(path) as conn:
+        existing = [r[0] for r in conn.execute("SELECT source_id FROM raw_items WHERE item_type = ?", (item_type,))]
+        stale = [s for s in existing if s not in keep]
+        conn.executemany("DELETE FROM raw_items WHERE source_id = ?", [(s,) for s in stale])
+        return stale

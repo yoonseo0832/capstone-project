@@ -32,6 +32,10 @@ class SyncResult:
     notices_new: int = 0 # 그중 새로 저장된 공지 수
     lx_notices: int = 0  # 수집한 게시판 공지(LearningX Board) 수
     lx_new: int = 0      # 그중 새로 저장된 수
+    pruned: int = 0      # LMS 에서 사라져 정리(삭제)된 공지 수
+    notice_ids: set = field(default_factory=set)  # 이번 수집에서 본 공지 source_id (정리 기준)
+    canvas_notices_ok: bool = True   # Canvas 공지를 모든 강의에서 빠짐없이 받았나 (정리 안전장치)
+    learningx_ok: bool = False       # Board 공지를 (수집 시도해서) 빠짐없이 받았나
     errors: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
@@ -41,6 +45,8 @@ class SyncResult:
             s += f", 공지 {self.notices}개(신규 {self.notices_new})"
         if self.lx_notices:
             s += f", 게시판 {self.lx_notices}개(신규 {self.lx_new})"
+        if self.pruned:
+            s += f", 사라진 공지 정리 {self.pruned}건"
         if self.errors:
             s += f", 에러 {len(self.errors)}건"
         return s
@@ -117,6 +123,7 @@ def sync_notices(settings: Settings, items, result: SyncResult | None = None) ->
     result = result or SyncResult()
     for item in items:
         result.notices += 1
+        result.notice_ids.add(item["source_id"])
         if raw_db.save_item(settings.lms_raw_db, item) == "new":
             result.notices_new += 1
     return result
@@ -127,6 +134,7 @@ def sync_board_notices(settings: Settings, items, result: SyncResult | None = No
     result = result or SyncResult()
     for item in items:
         result.lx_notices += 1
+        result.notice_ids.add(item["source_id"])
         if raw_db.save_item(settings.lms_raw_db, item) == "new":
             result.lx_new += 1
     return result
@@ -140,14 +148,30 @@ def collect_learningx(settings: Settings, client, courses, result: SyncResult) -
         lx = LearningXClient(client)
     except Exception as e:  # FakeClient 등 Canvas 세션이 없는 경우 포함
         log.warning("LearningX 초기화 실패 → 게시판 수집 건너뜀: %s", e)
-        return
+        return  # learningx_ok=False 유지 → 사라진 게시판 공지 정리를 하지 않음
+    ok = True
     for course in courses:
         try:
             _retry(lambda: sync_board_notices(settings, lx.iter_notices(course), result),
                    f"강의 {course['name']} 게시판")
         except Exception as e:
+            ok = False  # 한 강의라도 못 받으면 정리(삭제)는 보류 (네트워크 오류로 오삭제 방지)
             log.exception("강의 %s 게시판(LearningX) 수집 실패", course.get("name"))
             result.errors.append(f"{course['name']} 게시판: {e}")
+    result.learningx_ok = ok
+
+
+def prune_stale_notices(settings: Settings, result: SyncResult) -> None:
+    """이번 수집에서 못 본 공지 = LMS 에서 사라진 공지 → raw_items 에서 삭제.
+    출처별로 '빠짐없이 받았을 때만' 지운다 (네트워크 실패로 못 받은 걸 지우지 않도록)."""
+    removed = []
+    if result.canvas_notices_ok:
+        removed += raw_db.prune_items(settings.lms_raw_db, "announcement", result.notice_ids)
+    if result.learningx_ok:
+        removed += raw_db.prune_items(settings.lms_raw_db, "lx_board", result.notice_ids)
+    result.pruned = len(removed)
+    if removed:
+        log.info("사라진 공지 %d건 정리: %s", len(removed), ", ".join(removed[:10]))
 
 
 def sync_lms(settings: Settings, full: bool = False, client=None) -> SyncResult:
@@ -180,12 +204,17 @@ def sync_lms(settings: Settings, full: bool = False, client=None) -> SyncResult:
                 _retry(lambda: sync_notices(settings, client.iter_announcements(course), result),
                        f"강의 {course['name']} 공지")
             except Exception as e:
+                result.canvas_notices_ok = False  # 한 강의라도 실패 → 정리 보류
                 log.exception("강의 %s(%s) 공지 수집 실패", course["name"], course["id"])
                 result.errors.append(f"{course['name']} 공지: {e}")
+        else:
+            result.canvas_notices_ok = False  # 공지를 아예 안 받았으면 정리하지 않음
 
     # Board(LearningX) 게시판 공지 — Canvas API 밖이라 별도 경로로, 전부 끝낸 뒤 한 번에
     if settings.collect_learningx:
         collect_learningx(settings, client, courses, result)
+    # LMS 에서 사라진 공지는 raw_items 에서 정리 (출처별로 빠짐없이 받았을 때만 삭제)
+    prune_stale_notices(settings, result)
     log.info("LMS 동기화 완료: %s", result)
     return result
 
