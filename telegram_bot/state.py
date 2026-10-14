@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS announced_notices (
+    source_id    TEXT PRIMARY KEY,   -- raw_items.source_id (공지/게시판/게시글)
+    announced_at TEXT NOT NULL
+);
 """
 
 
@@ -35,6 +39,18 @@ def mark_sent(path, schedule_id: int, due_at: str, hours_list: list[int]) -> Non
     with connect(path) as conn:
         conn.executemany("INSERT OR IGNORE INTO sent_reminders VALUES (?, ?, ?, ?)",
                          [(schedule_id, due_at, h, ts) for h in hours_list])
+
+
+def announced_notice_ids(path) -> set[str]:
+    with connect(path) as conn:
+        return {r[0] for r in conn.execute("SELECT source_id FROM announced_notices")}
+
+
+def mark_notices_announced(path, source_ids: list[str]) -> None:
+    ts = now_str()
+    with connect(path) as conn:
+        conn.executemany("INSERT OR IGNORE INTO announced_notices VALUES (?, ?)",
+                         [(sid, ts) for sid in source_ids])
 
 
 def get(path, key: str) -> str | None:

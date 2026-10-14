@@ -4,6 +4,7 @@ from datetime import datetime
 import pytest
 
 from common import schedule_db
+from lms import raw_db
 from lms.config import Settings
 from telegram_bot import messages, state
 from telegram_bot.config import BotSettings
@@ -32,6 +33,16 @@ def add(settings, title, due, course="262R (세종-학부)빅데이터개론(영
     if done:
         schedule_db.set_completed(settings.schedule_db, sid)
     return sid
+
+
+def add_notice(settings, source_id, title, itype="announcement",
+               course="262R (세종-학부)빅데이터개론(영강)-01분반"):
+    raw_db.init_db(settings.lms_raw_db)
+    raw_db.save_item(settings.lms_raw_db, {
+        "source_id": source_id, "item_type": itype, "course_id": 1, "course_name": course,
+        "title": title, "content": "본문", "content_html": "", "link": f"https://lms/n/{source_id}",
+        "extracted_links": [], "due_at": None, "submitted": False,
+    })
 
 
 # ---------------------------------------------------------------- 문장 생성
@@ -63,6 +74,17 @@ def test_briefing_text(settings):
     assert "10/13(화)" in text
     assert "오늘 마감 1건" in text and "이번 주 남은 마감 1건" in text and "다음 주 1건" in text
     assert text.endswith("⚠️ 수집 실패")
+
+
+def test_notices_text(settings):
+    raw_db.init_db(settings.lms_raw_db)
+    assert "없어요" in messages.notices_text(settings.lms_raw_db)  # 비었을 때
+    add_notice(settings, "announcement:1", "중간고사 안내")
+    add_notice(settings, "lxboard:2", "기말고사 안내", itype="lx_board")
+    txt = messages.notices_text(settings.lms_raw_db)
+    assert "최근 공지 2건" in txt
+    assert "[빅데이터개론] 중간고사 안내" in txt
+    assert "https://lms/n/lxboard:2" in txt  # Canvas 공지 + 게시판 공지 모두
 
 
 def test_split_message():
@@ -148,3 +170,25 @@ def test_state_kv(bot_settings):
     state.put(bot_settings.state_db, "k", "1")
     state.put(bot_settings.state_db, "k", "2")
     assert state.get(bot_settings.state_db, "k") == "2"
+
+
+def test_state_announced_notices(bot_settings):
+    state.init_db(bot_settings.state_db)
+    assert state.announced_notice_ids(bot_settings.state_db) == set()
+    state.mark_notices_announced(bot_settings.state_db, ["a", "b"])
+    state.mark_notices_announced(bot_settings.state_db, ["b", "c"])  # 중복은 무시
+    assert state.announced_notice_ids(bot_settings.state_db) == {"a", "b", "c"}
+
+
+def test_briefing_shows_only_new_notices(schedule_bot, settings):
+    add(settings, "오늘과제", "2026-10-13 23:59")
+    add_notice(settings, "announcement:1", "기존공지")  # 첫 브리핑 전부터 있던 공지
+    tg = FakeBot()
+    # 첫 브리핑: 기존 공지는 '이미 알림' 처리 → 표시 안 함(도배 방지)
+    asyncio.run(schedule_bot.maybe_briefing(tg, datetime(2026, 10, 13, 10, 0)))
+    assert "새 공지" not in tg.sent[0][1]
+    # 다음 날 새 공지 추가 → 브리핑에 그것만 등장
+    add_notice(settings, "lxboard:9", "새중간고사공지", itype="lx_board")
+    asyncio.run(schedule_bot.maybe_briefing(tg, datetime(2026, 10, 14, 10, 0)))
+    latest = tg.sent[1][1]
+    assert "📢 새 공지" in latest and "새중간고사공지" in latest and "기존공지" not in latest

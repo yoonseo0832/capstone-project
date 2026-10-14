@@ -30,13 +30,14 @@ NO_PREVIEW = LinkPreviewOptions(is_disabled=True)  # 링크 미리보기 카드 
 COMMANDS = [
     BotCommand("today", "오늘 마감"),
     BotCommand("week", "이번 주 마감"),
+    BotCommand("notice", "최근 공지"),
     BotCommand("sync", "LMS 지금 새로고침"),
     BotCommand("help", "사용법"),
 ]
 HELP = ("📅 일정 비서예요. 그냥 말로 물어보세요.\n"
-        "예) 이번 주 마감 뭐 있어? / Week 04 Lab 끝냈어 / 10월 20일 3시 캡스톤 회의 추가해줘\n\n"
-        "/today 오늘 마감\n/week 이번 주 마감\n/sync LMS 지금 새로고침\n\n"
-        "아침 브리핑과 마감 알림은 자동으로 보내드려요.")
+        "예) 이번 주 마감 뭐 있어? / 중간고사 언제야? / Week 04 Lab 끝냈어 / 10월 20일 3시 캡스톤 회의 추가해줘\n\n"
+        "/today 오늘 마감\n/week 이번 주 마감\n/notice 최근 공지\n/sync LMS 지금 새로고침\n\n"
+        "아침 브리핑과 마감 알림은 자동으로 보내드려요. 새 공지도 아침에 함께 알려드려요.")
 
 
 class ScheduleBot:
@@ -67,6 +68,9 @@ class ScheduleBot:
 
     async def cmd_week(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self.reply(update, messages.week_text(self.s.schedule_db, datetime.now()))
+
+    async def cmd_notice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self.reply(update, messages.notices_text(self.s.lms_raw_db))
 
     async def cmd_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_chat.send_action(ChatAction.TYPING)
@@ -112,9 +116,31 @@ class ScheduleBot:
         except Exception as e:
             log.exception("브리핑 전 수집 실패")
             note = f"⚠️ LMS 수집에 실패해서 마지막으로 저장된 일정 기준이에요 ({type(e).__name__})"
-        await self.send(bot, messages.briefing_text(self.s.schedule_db, now, note))
+        text = messages.briefing_text(self.s.schedule_db, now, note)
+        new_block = messages.notices_block(self._new_notices(), "📢 새 공지")
+        if new_block:
+            text += "\n\n" + new_block
+        await self.send(bot, text)
         state.put(self.b.state_db, "last_briefing", today)
         return True
+
+    def _new_notices(self) -> list[dict]:
+        """지난 브리핑 이후 새로 올라온 공지. 첫 실행이면 기존 공지를 '이미 알림'으로
+        기록만 하고(도배 방지) 아무것도 반환하지 않는다."""
+        import sqlite3
+
+        from lms import raw_db
+        try:
+            items = raw_db.list_announcements(self.s.lms_raw_db, limit=100)
+        except sqlite3.OperationalError:
+            return []  # 아직 수집 전이라 raw_items 테이블이 없는 경우
+        announced = state.announced_notice_ids(self.b.state_db)
+        if not announced:  # 첫 브리핑: 기존 공지를 전부 봤다고 치고 표시하지 않음
+            state.mark_notices_announced(self.b.state_db, [it["source_id"] for it in items])
+            return []
+        new = [it for it in items if it["source_id"] not in announced]
+        state.mark_notices_announced(self.b.state_db, [it["source_id"] for it in new])
+        return new
 
     async def send_reminders(self, bot, now: datetime | None = None) -> int:
         now = now or datetime.now()
@@ -142,6 +168,7 @@ class ScheduleBot:
         app.add_handler(CommandHandler(["start", "help"], self.cmd_help, filters=mine))
         app.add_handler(CommandHandler("today", self.cmd_today, filters=mine))
         app.add_handler(CommandHandler("week", self.cmd_week, filters=mine))
+        app.add_handler(CommandHandler("notice", self.cmd_notice, filters=mine))
         app.add_handler(CommandHandler("sync", self.cmd_sync, filters=mine))
         app.add_handler(MessageHandler(mine & filters.TEXT & ~filters.COMMAND, self.on_text))
         app.add_handler(MessageHandler(~mine, self.on_stranger))
@@ -158,5 +185,6 @@ def run() -> None:
     bot = ScheduleBot(load_settings(), load_bot_settings())
     log.info("텔레그램 봇 시작 (브리핑 %s, 알림 %s시간 전, %d분마다 확인)",
              bot.b.briefing_time, bot.b.remind_hours, bot.b.check_minutes)
-    # 봇이 꺼져 있던 동안 쌓인 메시지는 버리지 않고 처리한다
-    bot.build().run_polling(allowed_updates=Update.ALL_TYPES)
+    # 봇이 꺼져 있던 동안 텔레그램에 쌓인 메시지는 버린다 → 재시작 직후 밀린 명령/질문이
+    # 한꺼번에 재생되며 답장이 도배되는 것을 막는다. 아침 브리핑은 켜진 직후 1회만 나간다.
+    bot.build().run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)

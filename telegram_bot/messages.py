@@ -8,8 +8,10 @@ from datetime import datetime, timedelta
 
 from assistant.context import WEEKDAYS, d_day, due_label, short_course, split_course, week_tag
 from common import schedule_db
+from lms import raw_db
 
 MAX_LEN = 4000  # 텔레그램 한 메시지 최대 4096자
+MAX_NOTICES = 10  # /notice 로 보여줄 최근 공지 수
 
 
 def _due(row: dict) -> datetime:
@@ -62,6 +64,29 @@ def briefing_text(db_path, now: datetime, sync_note: str | None = None) -> str:
     if sync_note:
         parts.append(f"\n{sync_note}")
     return "\n".join(parts)
+
+
+def notice_line(item: dict) -> str:
+    course = short_course(item["course_name"]) if item.get("course_name") else "-"
+    line = f"• [{course}] {item['title']}"
+    if item.get("link"):
+        line += f"\n  {item['link']}"
+    return line
+
+
+def notices_block(items: list[dict], header: str) -> str:
+    """공지 목록 → 메시지 블록. 비어 있으면 빈 문자열."""
+    if not items:
+        return ""
+    return f"{header} {len(items)}건\n" + "\n".join(notice_line(it) for it in items)
+
+
+def notices_text(raw_db_path, limit: int = MAX_NOTICES) -> str:
+    """/notice: 최근 공지(Canvas + 게시판)를 LLM 없이 바로."""
+    items = raw_db.list_announcements(raw_db_path, limit=limit)
+    if not items:
+        return "등록된 공지가 없어요. /sync 로 새로고침해 보세요."
+    return notices_block(items, "📢 최근 공지")
 
 
 def reminders_due(rows: list[dict], now: datetime, hours: list[int],
