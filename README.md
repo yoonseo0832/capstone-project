@@ -1,9 +1,11 @@
-# 일정 비서 — LMS 수집 + 공유 일정 DB
+# 일정 비서 — LMS 수집 + 공유 일정 DB + 텔레그램 봇
 
-> 담당: Yoonseo (Canvas LMS 수집, 공유 일정 DB, 시연용 답변 비서)
+> 담당: Yoonseo (Canvas LMS 수집, 공지 수집, 공유 일정 DB, 시연용 답변 비서, 텔레그램 봇)
 
 Canvas LMS API로 과제를 **매일 아침 자동으로** 받아와서 **팀 공유 일정 DB**에 넣고,
 Gemini API로 "이번 주 마감 뭐 있어?" 같은 질문에 **1~2초 안에** 답한다.
+과제뿐 아니라 **공지사항**(Canvas Announcements + 학교 LMS의 Board 게시판)도 모아서
+"중간고사 언제야?" 같은 질문에도 답하고, **텔레그램 봇**으로 어디서나 쓸 수 있다.
 
 ---
 
@@ -11,8 +13,8 @@ Gemini API로 "이번 주 마감 뭐 있어?" 같은 질문에 **1~2초 안에**
 
 | 구분 | 내용 |
 |---|---|
-| ✅ 내 담당 | Canvas LMS API 수집 → LMS 원본 DB → **공유 일정 DB**, 일정 DB 생성·추가·수정·삭제, 매일 07:00 수집 / 00:00 완료 일정 삭제, 시연용 답변 비서 |
-| 🤝 팀 공유 | **`schedules` 테이블 하나만** 공유한다. 모든 모듈은 [common/schedule_db.py](common/schedule_db.py) 함수로만 접근한다 |
+| ✅ 내 담당 | Canvas LMS API 수집 → LMS 원본 DB → **공유 일정 DB**, 일정 DB 생성·추가·수정·삭제, 매일 07:00 수집 / 00:00 완료 일정 삭제, **공지 수집(Canvas Announcements + LearningX Board)**, 시연용 답변 비서, **텔레그램 봇** |
+| 🤝 팀 공유 | **`schedules` 테이블 하나만** 공유한다. 모든 모듈은 [common/schedule_db.py](common/schedule_db.py) 함수로만 접근한다. (공지는 개인 원본 DB에만 저장 — 공유 테이블에는 안 올림) |
 
 ## 2. 전체 흐름
 
@@ -29,6 +31,29 @@ Gemini API로 "이번 주 마감 뭐 있어?" 같은 질문에 **1~2초 안에**
                                                                  ▼
                                     assistant (Gemini API) ── "이번 주 마감?" → 1~2초 답변
 ```
+
+### 공지 수집 (Canvas Announcements + LearningX Board)
+
+과제 외에 **공지사항**도 모은다. 공지는 마감이 없으므로 **공유 일정 테이블에는 안 올리고 개인 원본 DB(`raw_items`)에만** 저장한 뒤, 답변 비서가 질문할 때 `[공지]` 섹션으로 프롬프트에 넣어 "중간고사 언제야?" 같은 질문에 답한다. 공지는 두 군데에서 온다.
+
+**① Canvas Announcements** — Canvas 기본 공지. 공식 API로 바로 받는다
+([lms/canvas_client.py](lms/canvas_client.py) `iter_announcements`).
+
+**② LearningX "Board" 게시판** — 학교 LMS(mylms.korea.ac.kr) 왼쪽 메뉴의 **"Board"는 Canvas 기능이 아니라 LearningX(Xinics)라는 외부 앱(LTI)**이라, Canvas 공식 API로는 안 보인다. 중간/기말고사 안내 같은 공지가 여기에만 올라오는 과목이 있어서 별도로 가져온다 ([lms/learningx.py](lms/learningx.py)):
+
+```
+1. Canvas 에서 'Board' 외부도구 id 찾기      GET courses/{id}/tabs  (label="Board")
+2. 서명된 LTI 런치 폼 받기                   GET courses/{id}/external_tools/sessionless_launch?id=<tool>
+3. 그 폼을 LearningX 로 POST → 세션 수립      POST .../learningx_board/boards  → 쿠키 xn_api_token 발급
+4. LearningX 자체 API 로 게시판+본문 조회      GET /learningx/api/v1/learningx_board/courses/{id}/boards
+                                             (Authorization: Bearer <xn_api_token>)
+```
+
+즉 **Canvas 가 만들어준 서명 런치로 LearningX 에 로그인해 세션 토큰을 얻은 뒤, LearningX 의 게시판 API를 직접 호출**한다. 과목마다 Board 쓰는 방식이 달라 두 가지를 모두 처리한다:
+- **게시판 자체가 공지** (예: 정보통신): 게시판 제목+본문(`description`)을 공지로 저장
+- **'Announcement' 게시판에 글로 공지** (예: 빅데이터개론): 그 게시판 안의 **글(post)** 하나하나를 공지로 저장
+
+공지성 게시판만 고르고(공지 타입 또는 모듈 생성 게시판, Q&A·자료실 제외), 본문이 비면 제목을 내용으로 쓴다. **Canvas 공식 API가 아니라 LearningX 의 비공식 엔드포인트라 LMS 가 바뀌면 깨질 수 있어서**, 실패해도 과제·Canvas 공지 수집은 멈추지 않게 분리했다. `.env` 의 `LMS_COLLECT_LEARNINGX=false` 로 끌 수 있다.
 
 ## 3. 빠른 시작
 
@@ -75,6 +100,26 @@ AI 없이 확인·수정: `python -m lms list` / `done <id>` / `add "제목" --d
 | `ModuleNotFoundError` | `.venv\Scripts\activate` 먼저 |
 | 일정이 비어 있음 | `python -m lms sync` 먼저 |
 | 입력이 안 됨 (VS Code 밖 Git Bash 창) | PowerShell 사용 또는 `winpty python -m assistant` |
+
+### 텔레그램 봇
+
+같은 비서를 텔레그램에서 쓴다. 혼자 쓰는 봇이라 **지정한 `chat_id` 외의 대화는 전부 무시**한다.
+```bash
+python -m telegram_bot        # 봇 실행 (Ctrl+C 로 종료)
+```
+`.env` 에 `TELEGRAM_BOT_TOKEN`(@BotFather), `TELEGRAM_CHAT_ID`(본인 chat_id) 필요.
+
+| 입력 | 동작 |
+|---|---|
+| 그냥 말로 질문 | Gemini 비서가 답 (일정·공지·완료/추가/수정/삭제) |
+| `/today` `/week` | 오늘 / 이번 주 마감 (LLM 없이 DB 직답, 즉시) |
+| `/notice` | 최근 공지 (Canvas + Board, LLM 없이 즉시) |
+| `/sync` | LMS 지금 새로고침 |
+
+- **아침 브리핑**(기본 07:00): 오늘·이번주·다음주 마감 + **지난 브리핑 이후 새로 올라온 공지**를 하루 1번. PC를 늦게 켜도 켜진 직후 1번 보낸다.
+- **마감 알림**: 기본 24시간·3시간 전. 보낸 알림은 `bot_state.db` 에 기록해 중복/도배를 막는다.
+- 재시작 시 꺼져 있던 동안 쌓인 메시지는 버린다(`drop_pending_updates`) → 재시작 직후 답장 도배 방지.
+- 설정(`.env`): `BOT_BRIEFING_TIME`, `BOT_REMIND_HOURS`, `BOT_CHECK_MINUTES`, `BOT_STATE_DB_PATH`.
 
 ---
 
@@ -136,23 +181,32 @@ schedule_db.delete_schedule(DB, schedule_id)
 | 파일 | 하는 일 | 왜 이렇게 만들었나 |
 |---|---|---|
 | [config.py](lms/config.py) | `.env` 에서 키·DB 경로·스케줄 시간을 읽음 | 키를 코드에 쓰지 않기 위해. 경로·시간을 코드 수정 없이 바꿀 수 있고, 테스트에서는 임시 경로를 넘긴다 |
-| [canvas_client.py](lms/canvas_client.py) | Canvas API로 강의·과제·제출 상태를 받아 dict 로 정규화 | Canvas 는 시간을 **UTC** 로 줘서 한국 시간으로 변환한다 (이전 코드는 변환이 없어서 9시간 차이 났음). 본문 HTML에서 텍스트와 링크를 분리 저장. 다른 코드는 Canvas 라이브러리를 몰라도 되도록 여기서만 Canvas 를 다룬다 → 테스트에서 가짜 클라이언트로 바꿔 끼울 수 있다 |
-| [raw_db.py](lms/raw_db.py) | LMS 원본 DB: `raw_items`(본문, HTML, 링크, 추출 링크, **해시**, 제출 여부), `source_urls`(강의 URL + 사용자 URL) | 요구사항 "원본 데이터 저장 [내용, 링크, 해시]". 해시(SHA-256)는 제목·본문·마감·링크로 만들어서 **내용이 바뀐 과제만** 공유 테이블에 반영한다. 제출 여부는 해시에서 빼고 따로 비교 (제출은 "내용 변경"이 아니라 "완료"이므로) |
-| [sync.py](lms/sync.py) | 수집 → 원본 저장 → 해시 비교 → 필요한 것만 일정 반영 / 자정 정리 | 일정 테이블은 **신규·내용 변경·제출 상태 변경**일 때만 건드린다 → 사용자가 지운 일정이 매일 아침 되살아나지 않는다. 마감 지난 과제·마감 없는 과제는 **새로 올리지 않고** 원본에만 저장(`.env` 로 변경 가능). 단 이미 일정에 있는 과제는 마감이 지나도 제출 → 완료가 반영된다 (마감 당일 제출 대응). **자정 정리는 Canvas 제출 여부를 먼저 확인한 뒤 삭제** → 그날 낸 과제가 그날 밤 정리된다 (확인 실패해도 삭제는 진행). 네트워크 오류는 20초 간격 3회 재시도, 그래도 실패한 강의만 건너뜀 |
+| [canvas_client.py](lms/canvas_client.py) | Canvas API로 강의·과제·**공지(Announcements)**·제출 상태를 받아 dict 로 정규화 | Canvas 는 시간을 **UTC** 로 줘서 한국 시간으로 변환한다 (이전 코드는 변환이 없어서 9시간 차이 났음). 본문 HTML에서 텍스트와 링크를 분리 저장. 다른 코드는 Canvas 라이브러리를 몰라도 되도록 여기서만 Canvas 를 다룬다 → 테스트에서 가짜 클라이언트로 바꿔 끼울 수 있다 |
+| [learningx.py](lms/learningx.py) | 학교 LMS 의 **"Board"(LearningX 외부 앱) 공지** 수집 | Board 는 Canvas 가 아니라 LearningX(Xinics) LTI 앱이라 Canvas API 로 안 보인다. Canvas 의 서명된 LTI 런치로 LearningX 세션(`xn_api_token`)을 얻어 LearningX 게시판 API 를 직접 호출한다 (위 "공지 수집" 참고). 게시판=공지 방식과 게시판 안 글=공지 방식 둘 다 처리. **비공식 API라 깨질 수 있어** 수집을 분리하고 실패를 삼킨다 |
+| [raw_db.py](lms/raw_db.py) | LMS 원본 DB: `raw_items`(본문, HTML, 링크, 추출 링크, **해시**, 제출 여부, **공지/게시판 글 포함**), `source_urls`(강의 URL + 사용자 URL) | 요구사항 "원본 데이터 저장 [내용, 링크, 해시]". 해시(SHA-256)는 제목·본문·마감·링크로 만들어서 **내용이 바뀐 것만** 반영한다. 제출 여부는 해시에서 빼고 따로 비교. `list_announcements` 로 Canvas 공지(`announcement`)+Board 공지(`lx_board`)를 답변·봇에 넘긴다 |
+| [sync.py](lms/sync.py) | 수집 → 원본 저장 → 해시 비교 → 필요한 것만 일정 반영 / 공지 수집 / 자정 정리 | 일정 테이블은 **신규·내용 변경·제출 상태 변경**일 때만 건드린다 → 사용자가 지운 일정이 매일 아침 되살아나지 않는다. 마감 지난/없는 과제는 **새로 올리지 않고** 원본에만 저장(`.env` 로 변경 가능). 단 이미 일정에 있는 과제는 마감이 지나도 제출 → 완료가 반영된다. **공지(Canvas+Board)는 과제와 독립적으로 수집**해 raw_items 에만 저장(마감 없음) — 한쪽이 실패해도 나머지는 계속. **자정 정리는 Canvas 제출 여부를 먼저 확인한 뒤 삭제**. 네트워크 오류는 20초 간격 3회 재시도, 그래도 실패한 강의만 건너뜀 |
 | [scheduler.py](lms/scheduler.py) | 매일 07:00 수집, 00:00 완료 일정 삭제 (상주 프로세스 방식) | 터미널에 띄워두는 방식. **현재 내 PC는 Windows 작업 스케줄러에 등록해서 사용** (아래 6장) — 둘 다 켜면 두 번 실행되므로 하나만 쓸 것 |
 | [\_\_main\_\_.py](lms/__main__.py) | CLI: `sync`, `list`, `add`, `edit`, `done`, `delete`, `cleanup`, `url`, `raw`, `scheduler` | DB 를 직접 열지 않고 확인·수정·시연할 수 있게 |
 
 ### `assistant/` — 시연용 답변 비서
 | 파일 | 하는 일 | 왜 이렇게 만들었나 |
 |---|---|---|
-| [context.py](assistant/context.py) | DB 일정을 프롬프트용 짧은 표로 변환. 과목명 축약, **요일·D-day·이번주/다음주를 코드가 미리 계산** | 일정이 수십 건이라 매번 통째로 넣는 게 가장 빠르다 (조회용 왕복 없음). 가벼운 모델이 요일·날짜 계산을 자주 틀려서(10/07을 목요일로, 11/18을 10/18로) 계산은 코드가, 모델은 복사만 하게 했다 |
-| [bot.py](assistant/bot.py) | Gemini API 호출 (스트리밍), 완료/추가/수정/삭제/LMS 새로고침 함수 호출 처리, 대화 기록 | **질문 1개 = LLM 호출 1번**. 함수 호출 뒤 결과 안내 문장은 코드가 만들어서 두 번째 LLM 호출이 없다. 무료 한도 초과(429) 시 친절한 안내 |
+| [context.py](assistant/context.py) | DB 일정 + **공지(`[공지]` 섹션)**를 프롬프트용 짧은 표로 변환. 과목명 축약, **요일·D-day·이번주/다음주를 코드가 미리 계산** | 일정이 수십 건이라 매번 통째로 넣는 게 가장 빠르다 (조회용 왕복 없음). 가벼운 모델이 요일·날짜 계산을 자주 틀려서 계산은 코드가, 모델은 복사만 하게 했다. 공지는 Canvas+Board 를 합쳐 넣어 "중간고사 언제야?" 에도 답한다 |
+| [bot.py](assistant/bot.py) | Gemini API 호출 (스트리밍), 완료/추가/수정/삭제/LMS 새로고침 함수 호출 처리, 대화 기록 | **질문 1개 = LLM 호출 1번**. 함수 호출 뒤 결과 안내 문장은 코드가 만들어서 두 번째 LLM 호출이 없다. 무료 한도 초과(429) 시 친절한 안내. 공지/시험 질문은 [공지] 데이터로 답하고, 없는 조회 함수를 지어내 호출하지 않도록 규칙으로 막음 |
 | [\_\_main\_\_.py](assistant/__main__.py) | 대화 모드 / 한 번 질문 / `--timing` 응답 시간 표시 | 시연 및 속도 측정용 |
+
+### `telegram_bot/` — 텔레그램 봇
+| 파일 | 하는 일 | 왜 이렇게 만들었나 |
+|---|---|---|
+| [app.py](telegram_bot/app.py) | 봇 본체: 명령어/메시지 핸들러, 아침 브리핑·마감 알림 주기 작업 | 자유 텍스트는 비서(Gemini)로, `/today`·`/week`·`/notice`·`/sync` 는 DB 직답으로(빠르고 무료 한도 안 씀). 비서·수집은 동기 코드라 `asyncio.to_thread` 로 돌려 봇이 멈추지 않게 함. 지정 `chat_id` 외 대화는 무시. 재시작 시 `drop_pending_updates` 로 밀린 메시지 도배 방지 |
+| [messages.py](telegram_bot/messages.py) | DB → 메시지 문장 (today/week/notice/브리핑/알림) | 텔레그램 라이브러리에 의존하지 않아 테스트가 쉽다. LLM 없이 코드로 생성 |
+| [state.py](telegram_bot/state.py) | `bot_state.db`: 보낸 알림 기록, 아침 브리핑에서 이미 알린 공지(`announced_notices`) | 봇이 5분마다 깨어나므로 같은 알림/공지를 중복 전송하지 않게 파일에 기록. 첫 브리핑엔 기존 공지를 '이미 알림' 처리해 도배 방지 |
+| [config.py](telegram_bot/config.py) | `.env` 에서 토큰·chat_id·브리핑 시각·알림 시간 등을 읽음 | 키·설정을 코드에 두지 않기 위해 |
 
 ### 기타
 | 파일 | 하는 일 |
 |---|---|
-| [tests/](tests/) | pytest 25개. 가짜 Canvas·가짜 Gemini 로 **API 키 없이** 돌아간다 (중복 방지, 해시 변경 감지, 완료→삭제→재등록 방지, 함수 호출 등) |
+| [tests/](tests/) | pytest 43개. 가짜 Canvas·가짜 Gemini·가짜 텔레그램으로 **API 키 없이** 돌아간다 (중복 방지, 해시 변경 감지, 완료→삭제→재등록 방지, 함수 호출, 공지/게시판 수집, 봇 명령어·브리핑 등) |
 | [.env.example](.env.example) | `.env` 템플릿 (실제 키는 넣지 않음) |
 | [requirements.txt](requirements.txt) | 의존성 |
 
