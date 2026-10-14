@@ -121,6 +121,39 @@ def test_notices_saved_to_raw_only(settings):
     assert (r.notices, r.notices_new) == (1, 0)
 
 
+def board(bid, title, type="notice", from_module=True, desc="<p>내용</p>"):
+    return {"id": bid, "title": title, "type": type, "from_module": from_module, "description": desc}
+
+
+def test_normalize_board_filters():
+    from lms.learningx import normalize_board
+    # 공지 게시판 → 포함 (타입/링크/본문 확인)
+    it = normalize_board(board(1, "중간고사 안내", desc="<p>10/22 9시 강의실</p>"), 96043, "정보통신", BASE, 5)
+    assert it["source_id"] == "lxboard:1" and it["item_type"] == "lx_board" and it["due_at"] is None
+    assert "10/22" in it["content"]
+    assert it["link"] == f"{BASE}/courses/96043/external_tools/5"
+    # 본문이 없으면 제목을 내용으로 (예: Final exam)
+    it = normalize_board(board(2, "Final exam Thursday 9AM", type="normal", desc=""), 96043, "정보통신", BASE, 5)
+    assert it is not None and it["content"] == "Final exam Thursday 9AM"
+    # 제외 대상들: Q&A, 수동 자료실(normal+module False), 모듈 생성 qna 토론
+    assert normalize_board(board(3, "Q&A", type="qna", from_module=False), 96043, "x", BASE, 5) is None
+    assert normalize_board(board(4, "강의자료실", type="normal", from_module=False, desc=""), 96043, "x", BASE, 5) is None
+    assert normalize_board(board(5, "Follow-up", type="qna", from_module=True), 96043, "x", BASE, 5) is None
+
+
+def test_sync_board_notices_saves_raw_only(settings):
+    from lms.learningx import normalize_board
+    from lms.sync import sync_board_notices
+    raw_db.init_db(settings.lms_raw_db)
+    schedule_db.init_db(settings.schedule_db)
+    items = [normalize_board(board(10, "중간고사", desc="<p>10/22</p>"), 96043, "정보통신", BASE, 5)]
+    r = sync_board_notices(settings, items)
+    assert (r.lx_notices, r.lx_new) == (1, 1)
+    item = raw_db.get_item(settings.lms_raw_db, "lxboard:10")
+    assert item["item_type"] == "lx_board" and item["due_at"] is None
+    assert schedule_db.list_schedules(settings.schedule_db) == []  # 일정 테이블엔 안 올라감
+
+
 def test_hash_detects_content_change(settings):
     sync_lms(settings, client=FakeClient([assignment(10)]))
     old_hash = raw_db.get_item(settings.lms_raw_db, "assignment:10")["content_hash"]

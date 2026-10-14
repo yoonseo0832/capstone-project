@@ -101,10 +101,11 @@ def list_items(path) -> list[dict]:
 
 
 def list_announcements(path, limit: int = 15) -> list[dict]:
-    """게시판 공지를 최근 수집 순으로. 답변용 컨텍스트에 넣기 위한 조회."""
+    """공지를 최근 수집 순으로. 답변용 컨텍스트에 넣기 위한 조회.
+    Canvas 공지(announcement)와 Board 게시판 공지(lx_board)를 함께 반환한다."""
     with connect(path) as conn:
         rows = conn.execute(
-            "SELECT * FROM raw_items WHERE item_type = 'announcement' AND is_done = 0 "
+            "SELECT * FROM raw_items WHERE item_type IN ('announcement', 'lx_board') AND is_done = 0 "
             "ORDER BY fetched_at DESC, id DESC LIMIT ?",
             (limit,),
         )
