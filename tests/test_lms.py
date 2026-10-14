@@ -141,6 +141,20 @@ def test_normalize_board_filters():
     assert normalize_board(board(5, "Follow-up", type="qna", from_module=True), 96043, "x", BASE, 5) is None
 
 
+def test_normalize_post_and_container():
+    from lms.learningx import normalize_post, _is_announcement_container
+    # 'Announcement' 게시판 안의 글 → 공지 (빅데이터개론 방식)
+    p = {"id": 55, "title": "[Prof. Notice] Midterm", "content": "<p>1시간 오픈북</p>"}
+    it = normalize_post(p, 98769, "빅데이터개론", BASE, 5)
+    assert it["source_id"] == "lxpost:55" and it["item_type"] == "lx_board"
+    assert "오픈북" in it["content"]
+    # 공지 글이 들어있을 법한 게시판 판정
+    assert _is_announcement_container({"type": "normal", "title": "Announcement"})
+    assert _is_announcement_container({"type": "notice", "title": "아무거나"})
+    assert not _is_announcement_container({"type": "qna", "title": "Q&A 게시판"})
+    assert not _is_announcement_container({"type": "normal", "title": "강의자료실"})
+
+
 def test_sync_board_notices_saves_raw_only(settings):
     from lms.learningx import normalize_board
     from lms.sync import sync_board_notices

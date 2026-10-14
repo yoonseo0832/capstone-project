@@ -27,6 +27,8 @@ log = logging.getLogger(__name__)
 API_PREFIX = "/learningx/api/v1"
 BOARD_TOOL_LABEL = "Board"
 TOOL_ID_RE = re.compile(r"[?&]id=(\d+)")
+# 공지 글이 들어있을 법한 게시판(제목에 공지/announcement/notice) → 안의 글도 가져온다
+ANNOUNCE_RE = re.compile(r"announce|공지|notice", re.I)
 
 
 def _is_notice_board(b: dict) -> bool:
@@ -37,28 +39,45 @@ def _is_notice_board(b: dict) -> bool:
     return b.get("type") == "notice" or (bool(b.get("from_module")) and b.get("type") != "qna")
 
 
-def normalize_board(b: dict, course_id: int, course_name: str, base_url: str, tool_id: int) -> dict | None:
-    """게시판 1개 → 저장용 dict. 공지성 게시판이 아니면 None."""
-    if not _is_notice_board(b):
-        return None
-    text, links = html_to_text_and_links(b.get("description"), base_url)
+def _item(source_id, title, html, course_id, course_name, base_url, tool_id):
+    """공통 저장용 dict 생성 (게시판/게시글 공용)."""
+    text, links = html_to_text_and_links(html, base_url)
     if not text.strip():
-        text = b.get("title") or ""   # 본문이 없으면 제목이 곧 공지 (예: 'Final exam on Thursday 9AM')
+        text = title or ""        # 본문이 없으면 제목이 곧 공지 (예: 'Final exam on Thursday 9AM')
     return {
-        "source_id": f"lxboard:{b['id']}",
+        "source_id": source_id,
         "item_type": "lx_board",
         "course_id": course_id,
         "course_name": course_name,
-        "title": b.get("title") or "(제목 없음)",
+        "title": title or "(제목 없음)",
         "content": text,
-        "content_html": b.get("description") or "",
+        "content_html": html or "",
         # Canvas 안에서 Board 앱을 여는 링크 (로그인 상태면 바로 열림)
         "link": f"{base_url}/courses/{course_id}/external_tools/{tool_id}",
         "extracted_links": links,
         "due_at": None,
-        "start_at": None,     # raw_items 에 start_at 컬럼이 없어 저장에는 안 쓰임
+        "start_at": None,         # raw_items 에 start_at 컬럼이 없어 저장에는 안 쓰임
         "submitted": False,
     }
+
+
+def _is_announcement_container(b: dict) -> bool:
+    """안에 공지 '글'이 들어있을 법한 게시판인지 (빅데이터개론처럼 글로 공지하는 방식)."""
+    return b.get("type") == "notice" or bool(ANNOUNCE_RE.search(b.get("title") or ""))
+
+
+def normalize_board(b: dict, course_id: int, course_name: str, base_url: str, tool_id: int) -> dict | None:
+    """게시판 자체(제목+본문)를 공지로. 공지성 게시판이 아니면 None (정보통신처럼 게시판=공지인 방식)."""
+    if not _is_notice_board(b):
+        return None
+    return _item(f"lxboard:{b['id']}", b.get("title"), b.get("description"),
+                 course_id, course_name, base_url, tool_id)
+
+
+def normalize_post(p: dict, course_id: int, course_name: str, base_url: str, tool_id: int) -> dict:
+    """게시판 안의 글 1개를 공지로 (빅데이터개론처럼 'Announcement' 게시판에 글로 공지하는 방식)."""
+    return _item(f"lxpost:{p['id']}", p.get("title"), p.get("content") or p.get("body"),
+                 course_id, course_name, base_url, tool_id)
 
 
 class LearningXClient:
@@ -94,16 +113,26 @@ class LearningXClient:
             raise RuntimeError("LearningX 세션 토큰(xn_api_token)을 받지 못했습니다.")
         return token
 
-    def _boards(self, course_id: int, token: str) -> list[dict]:
-        url = f"{self.base}{API_PREFIX}/learningx_board/courses/{course_id}/boards"
-        r = self.session.get(url, timeout=REQUEST_TIMEOUT,
+    def _get(self, token: str, path: str, **params) -> list[dict]:
+        r = self.session.get(f"{self.base}{API_PREFIX}{path}", timeout=REQUEST_TIMEOUT, params=params,
                              headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
         r.raise_for_status()
         data = r.json()
         return data.get("items", []) if isinstance(data, dict) else (data or [])
 
+    def _boards(self, course_id: int, token: str) -> list[dict]:
+        return self._get(token, f"/learningx_board/courses/{course_id}/boards")
+
+    def _posts(self, course_id: int, board_id: int, token: str) -> list[dict]:
+        return self._get(token, f"/learningx_board/courses/{course_id}/boards/{board_id}/posts", per_page=100)
+
     def iter_notices(self, course: dict):
-        """과목의 Board 게시판 공지를 저장용 dict 로 하나씩 내보낸다."""
+        """과목의 Board 공지를 저장용 dict 로 하나씩 내보낸다.
+
+        두 가지 방식 모두 지원:
+        - 게시판 자체가 공지 (정보통신): 게시판 제목+본문을 공지로
+        - 'Announcement' 게시판에 글로 공지 (빅데이터개론): 게시판 안의 글을 공지로
+        """
         cid = course["id"]
         tool_id = self.board_tool_id(cid)
         if tool_id is None:
@@ -114,3 +143,7 @@ class LearningXClient:
             item = normalize_board(b, cid, course["name"], self.base, tool_id)
             if item is not None:
                 yield item
+            # 공지 글이 들어있는 게시판이면 그 안의 글도 공지로 수집
+            if _is_announcement_container(b) and (b.get("total_post_count") or 0) > 0:
+                for p in self._posts(cid, b["id"], token):
+                    yield normalize_post(p, cid, course["name"], self.base, tool_id)
