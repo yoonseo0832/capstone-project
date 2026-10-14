@@ -15,8 +15,8 @@ from lms import raw_db
 WEEKDAYS = "월화수목금토일"
 MAX_ROWS = 80
 MAX_DESC = 100
-MAX_NOTICES = 15       # 프롬프트에 넣을 공지 최대 건수 (무료 티어라 길이 제한)
-MAX_NOTICE_DESC = 200  # 공지 본문은 시험 날짜 등 세부가 중요해 과제보다 길게
+MAX_NOTICES = 12       # 프롬프트에 넣을 공지 최대 건수 (무료 티어라 길이 제한)
+MAX_NOTICE_DESC = 600  # 공지 본문은 시험 날짜·장소 등 세부가 중요해 과제보다 길게
 
 
 def split_course(content: str | None) -> tuple[str | None, str]:
