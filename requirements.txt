@@ -1,0 +1,5 @@
+playwright==1.60.0
+beautifulsoup4==4.15.0
+SQLAlchemy==2.1.6
+requests==2.34.2
+typing_extensions==4.16.0
