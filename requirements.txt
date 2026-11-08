@@ -6,3 +6,4 @@ tzdata  # Windows 에서 zoneinfo('Asia/Seoul') 사용
 pytest>=8
 google-genai>=2.0
 python-telegram-bot[job-queue]>=22,<23  # 텔레그램 봇 (job-queue: 주기 작업 run_repeating)
+-r my_scrapper/requirements.txt # 크롤러
