@@ -18,6 +18,10 @@ from assistant.context import build_context
 from common import schedule_db
 from lms.config import Settings
 
+from my_scrapper import WebScrapper
+from crawler.crawler_db_connect import import_schedules_from_crawler_db_to_common_db
+import asyncio
+
 DEFAULT_MODEL = "gemini-2.5-flash-lite"
 # 기본 모델이 과부하(503)/한도초과(429)면 순서대로 시도. .env GEMINI_FALLBACK_MODELS=a,b 로 변경
 DEFAULT_FALLBACKS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"]
@@ -44,6 +48,7 @@ SYSTEM_RULES = """당신은 대학생의 일정 관리 비서입니다. 아래 [
 """
 
 _INT_LIST = {"type": "array", "items": {"type": "integer"}}
+_STR_LIST = {"type": "array", "items": {"type": "string"}}
 FUNCTIONS = [
     types.FunctionDeclaration(
         name="complete_schedules", description="일정들을 완료 처리한다.",
@@ -67,8 +72,23 @@ FUNCTIONS = [
     types.FunctionDeclaration(
         name="sync_lms", description="Canvas LMS 에서 과제를 지금 다시 불러온다.",
         parameters_json_schema={"type": "object", "properties": {}}),
+    # 크롤러 관련
+    types.FunctionDeclaration(
+        name="run_crawler", description="크롤러를 실행시킴",
+        parameters_json_schema={"type": "object", "properties": {}}),
+    types.FunctionDeclaration(
+        name="get_crawler_url_list", description="등록된 크롤링 시작점 url목록을 가져옴",
+        parameters_json_schema={"type": "object", "properties": {}}),
+    types.FunctionDeclaration(
+        name="remove_crawler_url", description="선택한 등록된 크롤링 시작점 url을 제거함",
+        parameters_json_schema={"type": "object", "properties": {"urls": _STR_LIST}}),
+    types.FunctionDeclaration(
+        name="add_crawler_urls", description="제공한 url을 크롤링 시작점 url목록에 등록함",
+        parameters_json_schema={"type": "object", "properties": {"urls": _STR_LIST}}),
+    types.FunctionDeclaration(
+        name="get_crawl_result", description="크롤링 상태,결과를 가져옴",
+        parameters_json_schema={"type": "object", "properties": {}}),
 ]
-
 
 def _parts(chunk) -> list[types.Part]:
     if not chunk.candidates or not chunk.candidates[0].content:
@@ -97,12 +117,56 @@ class ScheduleAssistant:
             raise RuntimeError(".env 에 GEMINI_API_KEY 가 없습니다 (https://aistudio.google.com/apikey)")
         self.client = client or genai.Client(api_key=key)
         self.history: list[types.Content] = []
+        # 크롤러 생성
+        self.crawler = WebScrapper(api_key=key, gemini_model=self.model) # 일단 기본 경로 사용(./scrapper.db)
+        self.crawl_task = None # 진행중인 크롤러 작업을 나타냄
         self.actions: dict[str, Callable[..., str]] = {
             "complete_schedules": self._complete, "add_schedule": self._add,
             "update_schedule": self._update, "delete_schedule": self._delete, "sync_lms": self._sync,
+            # 크롤러 관련
+            "get_crawler_url_list": self._get_sources,
+            "remove_crawler_urls": self._remove_sources,
+            "add_crawler_url": self._add_sources,
+            "run_crawler": self._extract_schedules_from_crawler, 
+            "get_crawl_result": self._get_crawl_result,
         }
 
     # ------------------------------------------------------------ 함수 실행 (결과 문장은 코드가 생성)
+
+    # 크롤러 함수들
+    async def _run_and_save_to_db(self):
+        # 크롤링, 결과 저장
+        ret = await self.crawler.run()
+        # 통합db로 옮김
+        import_schedules_from_crawler_db_to_common_db(self.crawler, str(self.settings.schedule_db))
+        return ret
+    def _extract_schedules_from_crawler(self) -> str: # 일단 실행됬는지 여부만 반환함, 결과 및 상태는 따로 확인해야됨
+        if self.crawl_task is None or self.crawl_task.done():
+            self.crawl_task = asyncio.create_task(self._run_and_save_to_db())
+            return "크롤링 시작됨"
+        return "이미 진행중인 크롤링이 있음"
+    def _get_crawl_result(self) -> str:
+        if self.crawl_task is None:
+            return "진행중인 크롤링이 없음"
+        if not self.crawl_task.done():
+            return "아직 크롤링이 진행중임"
+        ret = self.crawl_task.result()
+        return str(ret)
+    def _get_sources(self) -> str:
+        return ", ".join([f"{obj.url}:{obj.title}" for obj in self.crawler.get_sources()])
+    def _remove_sources(self, urls:list[str]) -> str:
+        try:
+            self.crawler.remove_sources(urls)
+        except Exception as e:
+            return f"url제거 실패: e:{e}"
+        return f"🗑️ 삭제함: {urls}"
+    def _add_sources(self, urls:list[str])->str:
+        try:
+            self.crawler.add_sources(urls)
+        except Exception as e:
+            return f"url추가 실패: e:{e}"
+        return f"➕ 추가함: {urls}"
+
 
     def _complete(self, ids: list[int]) -> str:
         done = [r["title"] for i in ids if (r := schedule_db.set_completed(self.settings.schedule_db, int(i)))]
@@ -133,6 +197,7 @@ class ScheduleAssistant:
         return f"🔄 LMS 동기화: {sync_lms(self.settings)}"
 
     def run_action(self, name: str, args: dict) -> str:
+        # LMS 또는 크롤러 함수 가져오기
         fn = self.actions.get(name)
         if fn is None:
             return f"(알 수 없는 동작: {name})"

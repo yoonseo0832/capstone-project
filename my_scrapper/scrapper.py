@@ -146,7 +146,10 @@ class WebScrapper:
         """등록되어있는 Source URL 제거"""
         for url in urls:
             self.remove_source(url)
-    
+    def get_sources(self) -> list[UrlList]:
+        """등록되어 있는 source url들을 가져옴"""
+        return self.db.select_sources()
+
     def deactivate_url(self,url:str):
         """수집된 url을 비활성화 합니다(추출목록에서 제외됨)"""
         clean = get_clean_url(url)
@@ -417,6 +420,13 @@ class WebScrapper:
             if has_schedule_only:
                 stmt = stmt.where(ExtractedSchedule.has_schedule == True)
             stmt = stmt.order_by(ExtractedSchedule.id.asc())
+            return list(sess.execute(stmt).scalars().all())
+
+    def get_crawled_urls(self) -> list[UrlList]:
+        """전체 크롤링된 URL 목록 조회"""
+        with self.db.session() as sess:
+            from sqlalchemy import select
+            stmt = select(UrlList).where(UrlList.is_active==True).order_by(UrlList.id.asc())
             return list(sess.execute(stmt).scalars().all())
 
     def get_filtered_urls(self) -> list[FilteredUrl]:

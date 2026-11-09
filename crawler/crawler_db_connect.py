@@ -2,7 +2,7 @@ from common.schedule_db import add_schedule, upsert_by_source
 from my_scrapper.scrapper import MiguScrapper     # 크롤러 인터페이스
 from my_scrapper.storage import ExtractedSchedule # 크롤링된 일정
 
-"""크롤러와 통합db를 연결하는 함수"""
+"""크롤러와 통합db를 연결하는 부분"""
 
 def import_schedules_from_crawler_db_to_common_db(scrapper: MiguScrapper, path:str)->list[tuple[int,str]]:
     """
@@ -33,6 +33,9 @@ def import_schedules_from_crawler_db_to_common_db(scrapper: MiguScrapper, path:s
         source = 'crawl'
         source_id = schedule.id
         # 넣기
-        rets.append(upsert_by_source(path, source, source_id, title, content, due_at, start_at, url))
-        # inserted_ids.append(add_schedule(path, title, content, due_at, start_at, url, source, source_id))
+        rets.append(upsert_by_source(path, source, str(source_id), title, content, due_at, start_at, url))
+        # 크롤러 db에서 해당하는 url 비활성화(재수집 방지)
+        scrapper.deactivate_url(url)
+    # 비활성화된 url관련된 것들 삭제 
+    scrapper.remove_deactivated_things()
     return rets
