@@ -22,10 +22,11 @@ from dotenv import get_key, set_key
 from pathlib import Path
 from lms.config import load_settings
 
+import asyncio
 from my_scrapper import MiguScrapper
 from .crawler_db_connect import import_schedules_from_crawler_db_to_common_db
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(
         prog="python -m my_scrapper", description="내 패키지의 커스텀 CLI 도구입니다."
     )
@@ -38,6 +39,12 @@ def main():
         "--url",
         type=str,
         help="url 주소들",
+    )
+    # description
+    parser.add_argument(
+        "--description",
+        type=str,
+        help="url 에 대한 설명",
     )
     # key
     parser.add_argument(
@@ -67,12 +74,14 @@ def main():
     )
 
     # env
-    env_path = Path(".env")
+    env_path = Path(".env.crawler")
     if not env_path.exists():
         env_path.touch()
 
     args = parser.parse_args()
     job, stage, target, url, key, target = args.job, args.stage, args.target, args.url, args.key, args.target
+    debug = args.debug
+    print(f"debug: {debug}")
     if job == "set":
         if not key: 
             print("키를 제공해 주세요")
@@ -80,15 +89,14 @@ def main():
         set_key(env_path, "API_KEY", key)
         print("키 설정완료")
         return
-
-    scrapper = MiguScrapper(api_key=get_key(env_path, "API_KEY"))
+    scrapper = MiguScrapper(api_key=get_key(env_path, "API_KEY"),debug=(not debug))
     if job == "run":
         match stage:
-            case "crawl": scrapper.crawl()
-            case "fetch_contents" : scrapper.fetch_contents()
+            case "crawl": await scrapper.crawl()
+            case "fetch_contents" : await scrapper.fetch_contents()
             case "filter_urls" : scrapper.filter_urls()
             case "extract_schedules" : scrapper.extract_schedules()
-            case "all" : scrapper.run()
+            case "all" : await scrapper.run()
         return
     if job == "add" or job == "remove":
         if url is None: 
@@ -96,7 +104,9 @@ def main():
             return
         match job:
             case "add": 
-                scrapper.add_source(url)
+                description = args.description
+                # print(description)
+                scrapper.add_source(url,description)
                 print("url이 시작점에 추가됨")
             case "remove" : 
                 scrapper.remove_source(url)
@@ -123,4 +133,4 @@ def main():
         print("공유db로 이동완료")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -36,6 +36,12 @@ def main():
         type=str,
         help="url 주소들",
     )
+    # description
+    parser.add_argument(
+        "--description",
+        type=str,
+        help="url 에 대한 설명",
+    )
     # key
     parser.add_argument(
         "-k",
@@ -64,12 +70,13 @@ def main():
     )
 
     # env
-    env_path = Path(".env")
+    env_path = Path(".env.crawler")
     if not env_path.exists():
         env_path.touch()
 
     args = parser.parse_args()
     job, stage, target, url, key, target = args.job, args.stage, args.target, args.url, args.key, args.target
+    debug = args.debug
     if job == "set":
         if not key: 
             print("키를 제공해 주세요")
@@ -78,7 +85,7 @@ def main():
         print("키 설정완료")
         return
 
-    scrapper = MiguScrapper(api_key=get_key(env_path, "API_KEY"))
+    scrapper = MiguScrapper(api_key=get_key(env_path, "API_KEY"),debug=debug)
     if job == "run":
         match stage:
             case "crawl": scrapper.crawl()
@@ -93,7 +100,9 @@ def main():
             return
         match job:
             case "add": 
-                scrapper.add_source(url)
+                description = args.description
+                # print(description)
+                scrapper.add_source(url,description)
                 print("url이 시작점에 추가됨")
             case "remove" : 
                 scrapper.remove_source(url)
