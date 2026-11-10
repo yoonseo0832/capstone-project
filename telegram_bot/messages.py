@@ -6,7 +6,15 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from assistant.context import WEEKDAYS, d_day, due_label, short_course, split_course, week_tag
+from assistant.context import (
+    WEEKDAYS,
+    d_day,
+    due_label,
+    parse_due,
+    short_course,
+    split_course,
+    week_tag,
+)
 from common import schedule_db
 from lms import raw_db
 
@@ -15,7 +23,7 @@ MAX_NOTICES = 10  # /notice 로 보여줄 최근 공지 수
 
 
 def _due(row: dict) -> datetime:
-    return datetime.strptime(row["due_at"], schedule_db.TIME_FMT)
+    return parse_due(row["due_at"]) or datetime.max
 
 
 def course_of(row: dict) -> str:

@@ -126,7 +126,7 @@ class WebScrapper:
         self.schedule_storage = DBScheduleStorage(self.db)
 
     async def _create_context(self)->Context:
-        return await Context.create(self.session_path, self.debug)
+        return await Context.create(self.session_path, (not self.debug))
 
     def add_source(self, url: str, title: str|None =None) -> None:
         """크롤링을 시작할 Source URL 등록"""
