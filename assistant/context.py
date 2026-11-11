@@ -10,7 +10,6 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from common import schedule_db
-from lms import raw_db
 
 WEEKDAYS = "월화수목금토일"
 MAX_ROWS = 80
@@ -65,15 +64,16 @@ def d_day(due_at: str | None, now: datetime) -> str:
 
 
 def due_label(due_at: str | None) -> str:
-    """'2026-10-07 23:59', '2026-09-09T09:00:00', '2026-09-09 09:00:00', '2026-09-09' → 포맷팅"""
+    """'2026-10-07 23:59' → '2026-10-07(수) 23:59'. 연도를 넣어 LLM 이 연도를 추측(내년으로 착각)하지
+    않게 한다. 크롤러 등 다양한 포맷(ISO·날짜만)도 parse_due 로 견딘다."""
     due = parse_due(due_at)
     if not due:
         return "마감없음"
     s = str(due_at).strip()
     # 시간 정보가 포함되어 있는지 확인 (T가 있거나 공백 뒤에 콜론이 있는 경우)
     if "T" in s or (" " in s and ":" in s):
-        return f"{due:%m/%d}({WEEKDAYS[due.weekday()]}) {due:%H:%M}"
-    return f"{due:%m/%d}({WEEKDAYS[due.weekday()]})"
+        return f"{due:%Y-%m-%d}({WEEKDAYS[due.weekday()]}) {due:%H:%M}"
+    return f"{due:%Y-%m-%d}({WEEKDAYS[due.weekday()]})"
 
 
 def week_tag(due_at: str | None, now: datetime) -> str:
@@ -90,13 +90,15 @@ def week_tag(due_at: str | None, now: datetime) -> str:
     return "이후"
 
 
-def build_context(db_path, now: datetime | None = None, raw_db_path=None) -> str:
+def build_context(db_path, now: datetime | None = None) -> str:
     """작은 모델이 날짜 계산을 자주 틀리므로 요일·D-day·주 구분을 전부 미리 계산해서 넣는다.
 
-    raw_db_path 를 주면 게시판 공지도 [공지] 섹션으로 붙인다(시험·공지 질문 답변용).
+    공지(source='notice:...')는 마감이 없어 [일정] 목록에서 빼고, 아래 [공지] 섹션으로 따로 붙인다
+    (시험·공지 질문 답변용). 일정·공지 모두 공유 DB(schedule.db) 한 곳에서 읽는다.
     """
     now = now or datetime.now()
-    rows = schedule_db.list_schedules(db_path, include_completed=True)[:MAX_ROWS]
+    rows = [r for r in schedule_db.list_schedules(db_path, include_completed=True)
+            if not str(r["source"]).startswith(schedule_db.NOTICE_PREFIX)][:MAX_ROWS]
     lines = [f"현재 시각: {now:%Y-%m-%d %H:%M} ({WEEKDAYS[now.weekday()]})",
              f"일정 {len(rows)}건 (마감 순). 형식: id | 마감 | D-day | 주 | 상태 | 과목 | 제목 | 링크 | 설명"]
     for r in rows:
@@ -110,24 +112,25 @@ def build_context(db_path, now: datetime | None = None, raw_db_path=None) -> str
         ]))
     if not rows:
         lines.append("(등록된 일정 없음)")
-    if raw_db_path is not None:
-        lines += notice_lines(raw_db_path)
+    lines += notice_lines(db_path)
     return "\n".join(lines)
 
 
-def notice_lines(raw_db_path) -> list[str]:
-    """게시판 공지를 '[공지]' 섹션 텍스트로. 마감이 없으므로 과목·제목·본문·링크만 넣는다."""
+def notice_lines(db_path) -> list[str]:
+    """공유 DB의 공지를 '[공지]' 섹션 텍스트로. 마감이 없으므로 과목·제목·본문·링크만 넣는다.
+    과목명은 일정과 같은 규칙으로 content 의 '[과목명] 본문' 에서 꺼낸다."""
     try:
-        notices = raw_db.list_announcements(raw_db_path, limit=MAX_NOTICES)
+        notices = schedule_db.list_notices(db_path, limit=MAX_NOTICES)
     except sqlite3.OperationalError:
-        return []  # 아직 수집 전이라 raw_items 테이블이 없는 경우
+        return []  # 아직 수집 전이라 schedules 테이블이 없는 경우
     if not notices:
         return []
     out = ["", f"[공지] 게시판/공지사항 {len(notices)}건. 형식: 과목 | 제목 | 내용 | 링크"]
     for n in notices:
-        desc = re.sub(r"\s+", " ", n["content"] or "")[:MAX_NOTICE_DESC]
+        course, body = split_course(n["content"])
+        desc = re.sub(r"\s+", " ", body or "")[:MAX_NOTICE_DESC]
         out.append(" | ".join([
-            short_course(n["course_name"] or "-"),
-            n["title"], desc or "-", n["link"] or "-",
+            short_course(course) if course else "-",
+            n["title"], desc or "-", n["url"] or "-",
         ]))
     return out

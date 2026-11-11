@@ -16,7 +16,6 @@ from assistant.context import (
     week_tag,
 )
 from common import schedule_db
-from lms import raw_db
 
 MAX_LEN = 4000  # 텔레그램 한 메시지 최대 4096자
 MAX_NOTICES = 10  # /notice 로 보여줄 최근 공지 수
@@ -75,10 +74,12 @@ def briefing_text(db_path, now: datetime, sync_note: str | None = None) -> str:
 
 
 def notice_line(item: dict) -> str:
-    course = short_course(item["course_name"]) if item.get("course_name") else "-"
+    """공유 DB(schedules)의 공지 row → 한 줄. 과목명은 content '[과목명] 본문' 에서 꺼낸다."""
+    course, _ = split_course(item.get("content"))
+    course = short_course(course) if course else "-"
     line = f"• [{course}] {item['title']}"
-    if item.get("link"):
-        line += f"\n  {item['link']}"
+    if item.get("url"):
+        line += f"\n  {item['url']}"
     return line
 
 
@@ -89,9 +90,9 @@ def notices_block(items: list[dict], header: str) -> str:
     return f"{header} {len(items)}건\n" + "\n".join(notice_line(it) for it in items)
 
 
-def notices_text(raw_db_path, limit: int = MAX_NOTICES) -> str:
-    """/notice: 최근 공지(Canvas + 게시판)를 LLM 없이 바로."""
-    items = raw_db.list_announcements(raw_db_path, limit=limit)
+def notices_text(db_path, limit: int = MAX_NOTICES) -> str:
+    """/notice: 최근 공지(Canvas + 게시판)를 LLM 없이 바로. 공유 DB(schedules)에서 읽는다."""
+    items = schedule_db.list_notices(db_path, limit=limit)
     if not items:
         return "등록된 공지가 없어요. /sync 로 새로고침해 보세요."
     return notices_block(items, "📢 최근 공지")

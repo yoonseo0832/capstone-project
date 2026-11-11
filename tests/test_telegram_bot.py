@@ -4,7 +4,6 @@ from datetime import datetime
 import pytest
 
 from common import schedule_db
-from lms import raw_db
 from lms.config import Settings
 from telegram_bot import messages, state
 from telegram_bot.config import BotSettings
@@ -23,8 +22,8 @@ def settings(tmp_path):
 
 @pytest.fixture
 def bot_settings(tmp_path):
-    return BotSettings(token="x", chat_id=1, briefing_time="07:00", remind_hours=[24, 3],
-                       check_minutes=5, state_db=tmp_path / "bot.db")
+    return BotSettings(token="x", chat_id=1, briefing_time="07:00", crawl_time="06:00",
+                       remind_hours=[24, 3], check_minutes=5, state_db=tmp_path / "bot.db")
 
 
 def add(settings, title, due, course="262R (세종-학부)빅데이터개론(영강)-01분반", done=False):
@@ -35,14 +34,15 @@ def add(settings, title, due, course="262R (세종-학부)빅데이터개론(영
     return sid
 
 
+NOTICE_SOURCE = {"announcement": "notice:lms", "lx_board": "notice:board"}
+
+
 def add_notice(settings, source_id, title, itype="announcement",
                course="262R (세종-학부)빅데이터개론(영강)-01분반"):
-    raw_db.init_db(settings.lms_raw_db)
-    raw_db.save_item(settings.lms_raw_db, {
-        "source_id": source_id, "item_type": itype, "course_id": 1, "course_name": course,
-        "title": title, "content": "본문", "content_html": "", "link": f"https://lms/n/{source_id}",
-        "extracted_links": [], "due_at": None, "submitted": False,
-    })
+    """공지를 공유 DB(schedules)에 due_at=NULL, source='notice:...' 로 저장."""
+    schedule_db.upsert_by_source(
+        settings.schedule_db, source=NOTICE_SOURCE[itype], source_id=source_id,
+        title=title, content=f"[{course}] 본문", due_at=None, url=f"https://lms/n/{source_id}")
 
 
 # ---------------------------------------------------------------- 문장 생성
@@ -54,7 +54,7 @@ def test_today_and_week_text(settings):
     add(settings, "끝낸과제", "2026-10-13 18:00", done=True)
 
     today = messages.today_text(settings.schedule_db, NOW)
-    assert "오늘 마감 1건" in today and "D-day 10/13(화) 23:59 | 빅데이터개론 | 오늘과제" in today
+    assert "오늘 마감 1건" in today and "D-day 2026-10-13(화) 23:59 | 빅데이터개론 | 오늘과제" in today
     assert "https://lms/오늘과제" in today and "끝낸과제" not in today
 
     week = messages.week_text(settings.schedule_db, NOW)
@@ -71,17 +71,16 @@ def test_briefing_text(settings):
     add(settings, "목요일과제", "2026-10-15 23:59")
     add(settings, "다음주과제", "2026-10-20 23:59")
     text = messages.briefing_text(settings.schedule_db, NOW, "⚠️ 수집 실패")
-    assert "10/13(화)" in text
+    assert "2026-10-13(화)" in text
     assert "오늘 마감 1건" in text and "이번 주 남은 마감 1건" in text and "다음 주 1건" in text
     assert text.endswith("⚠️ 수집 실패")
 
 
 def test_notices_text(settings):
-    raw_db.init_db(settings.lms_raw_db)
-    assert "없어요" in messages.notices_text(settings.lms_raw_db)  # 비었을 때
+    assert "없어요" in messages.notices_text(settings.schedule_db)  # 비었을 때
     add_notice(settings, "announcement:1", "중간고사 안내")
     add_notice(settings, "lxboard:2", "기말고사 안내", itype="lx_board")
-    txt = messages.notices_text(settings.lms_raw_db)
+    txt = messages.notices_text(settings.schedule_db)
     assert "최근 공지 2건" in txt
     assert "[빅데이터개론] 중간고사 안내" in txt
     assert "https://lms/n/lxboard:2" in txt  # Canvas 공지 + 게시판 공지 모두

@@ -102,8 +102,9 @@ def test_sync_inserts_and_dedupes(settings):
     assert len(schedule_db.list_schedules(settings.schedule_db)) == 1
 
 
-def test_notices_saved_to_raw_only(settings):
-    """게시판 공지는 raw_items 에만 저장되고 일정 테이블에는 올라가지 않는다."""
+def test_notices_saved_to_raw_and_shared(settings):
+    """공지는 원본 raw_items 에 저장되고, 공유 테이블엔 'notice:' source(마감 없음)로 올라가
+    /today·/week 일정에는 안 섞인다."""
     client = FakeClient([assignment(10)], announcements=[announcement(50, title="중간고사 안내")])
     r = sync_lms(settings, client=client)
     assert (r.notices, r.notices_new) == (1, 1)
@@ -113,9 +114,14 @@ def test_notices_saved_to_raw_only(settings):
     assert item["title"] == "중간고사 안내"
     assert "중간고사" in item["content"]
     assert item["due_at"] is None
-    # 일정 테이블에는 과제만 (공지는 제외)
-    rows = schedule_db.list_schedules(settings.schedule_db)
-    assert [row["source_id"] for row in rows] == ["assignment:10"]
+    # 일정(비-notice) 목록엔 과제만
+    non_notice = [row for row in schedule_db.list_schedules(settings.schedule_db)
+                  if not str(row["source"]).startswith("notice:")]
+    assert [row["source_id"] for row in non_notice] == ["assignment:10"]
+    # 공지는 공유 테이블에 notice 로 올라감 (due_at 없음)
+    notices = schedule_db.list_notices(settings.schedule_db)
+    assert [n["source_id"] for n in notices] == ["announcement:50"]
+    assert notices[0]["due_at"] is None
 
     r = sync_lms(settings, client=client)  # 다시 돌려도 중복 저장 안 됨
     assert (r.notices, r.notices_new) == (1, 0)
@@ -155,7 +161,7 @@ def test_normalize_post_and_container():
     assert not _is_announcement_container({"type": "normal", "title": "강의자료실"})
 
 
-def test_sync_board_notices_saves_raw_only(settings):
+def test_sync_board_notices_saves_raw_and_shared(settings):
     from lms.learningx import normalize_board
     from lms.sync import sync_board_notices
     raw_db.init_db(settings.lms_raw_db)
@@ -165,7 +171,10 @@ def test_sync_board_notices_saves_raw_only(settings):
     assert (r.lx_notices, r.lx_new) == (1, 1)
     item = raw_db.get_item(settings.lms_raw_db, "lxboard:10")
     assert item["item_type"] == "lx_board" and item["due_at"] is None
-    assert schedule_db.list_schedules(settings.schedule_db) == []  # 일정 테이블엔 안 올라감
+    # 공유 테이블엔 공지(notice:board)로 올라가고, 일정(비-notice) 목록엔 없음
+    assert schedule_db.list_notices(settings.schedule_db)[0]["source_id"] == "lxboard:10"
+    assert [r for r in schedule_db.list_schedules(settings.schedule_db)
+            if not str(r["source"]).startswith("notice:")] == []
 
 
 def test_stale_notice_pruned_when_disappeared(settings):

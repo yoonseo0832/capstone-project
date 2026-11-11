@@ -38,6 +38,10 @@ CREATE INDEX IF NOT EXISTS idx_schedules_completed ON schedules (is_completed);
 # update_schedule 로 수정 가능한 컬럼 (컬럼명은 SQL에 직접 들어가므로 화이트리스트로 제한)
 EDITABLE_COLUMNS = {"title", "content", "start_at", "due_at", "url", "is_completed"}
 
+# 공지는 같은 테이블에 due_at=NULL 로 저장하되 source 를 'notice:' 로 시작하게 해서 일정과 구분한다
+# (예: 'notice:lms', 'notice:board', 'notice:crawler:<사이트>'). 마감이 없어 /today·/week·알림엔 안 섞인다.
+NOTICE_PREFIX = "notice:"
+
 
 def now_str() -> str:
     return datetime.now().strftime(TIME_FMT)
@@ -179,6 +183,39 @@ def delete_by_source(path, source: str, source_id: str) -> bool:
 
 def cleanup_completed(path) -> list[dict]:
     """완료된 일정 전부 삭제(매일 자정 실행용). 삭제된 행들을 반환해서
-    각 수집기가 자기 원본 DB에 '완료됨' 표시를 남길 수 있게 한다(다음 수집 때 다시 생기지 않도록)."""
+    각 수집기가 자기 원본 DB에 '완료됨' 표시를 남길 수 있게 한다(다음 수집 때 다시 생기지 않도록).
+
+    공지(source='notice:...')는 is_completed 가 항상 0 이라 여기서 지워지지 않는다."""
     with connect(path) as conn:
         return [dict(r) for r in conn.execute("DELETE FROM schedules WHERE is_completed = 1 RETURNING *")]
+
+
+# ---------------------------------------------------------------- 공지 (마감 없는 공유 항목)
+
+def list_notices(path, limit: int | None = None) -> list[dict]:
+    """공지(source 가 'notice:' 로 시작)를 최근 게시순으로 반환. 마감(due_at) 개념이 없다.
+    과목명은 content 의 '[과목명] 본문' 에서 split_course 로 꺼내 쓴다(일정과 동일 규칙)."""
+    sql = ("SELECT * FROM schedules WHERE source LIKE 'notice:%' "
+           "ORDER BY start_at IS NULL, start_at DESC, id DESC")
+    params: list = []
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    with connect(path) as conn:
+        return [dict(r) for r in conn.execute(sql, params)]
+
+
+def prune_notices(path, source: str, keep_source_ids) -> list[str]:
+    """해당 source 공지 중 keep_source_ids 에 없는 것을 삭제(LMS 에서 사라진 공지 정리용).
+    반환: 삭제된 source_id 목록. keep 이 '이번 수집에서 본 것 전부'일 때만 호출해야 안전하다
+    (raw_db.prune_items 와 같은 규칙)."""
+    keep = set(keep_source_ids)
+    with connect(path) as conn:
+        existing = [r[0] for r in conn.execute(
+            "SELECT source_id FROM schedules WHERE source = ?", (source,))]
+        stale = [s for s in existing if s not in keep]
+        conn.executemany(
+            "DELETE FROM schedules WHERE source = ? AND source_id = ?",
+            [(source, s) for s in stale],
+        )
+        return stale
