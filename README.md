@@ -304,7 +304,7 @@ python -m lms sync && python -m lms raw
 - **테스트 46개** (가짜 Canvas·Gemini·텔레그램으로 키 없이 실행)
 
 ### ⏳ 남은 개발
-- [ ] **팀원 크롤러 병합** (아래 참고) — 예정
+- [O] **팀원 크롤러 병합** (아래 참고) — 예정
 - [ ] 개수 질문("몇 개야?") 정확도 개선: 과목별·월별 개수를 코드가 미리 계산해 프롬프트에 넣기 (7장)
 - [ ] LearningX 는 비공식 API라 LMS 업데이트 시 점검 필요 (실패해도 과제·Canvas 공지는 계속되도록 이미 분리)
 - [ ] 정식 서비스로 간다면: 사용자별 LMS 토큰 입력(또는 학교 OAuth Developer Key), 토큰 암호화 저장, `schedules` 에 `user_id` 추가 — **캡스톤 시연 범위에서는 하지 않음**
@@ -326,6 +326,14 @@ python -m lms sync && python -m lms raw
 
 - 텔레그램 봇이 켜져 있으면 **매일 `BOT_CRAWL_TIME`(기본 06:00)에 크롤링 → 공유 DB 반영**을 자동으로 한다.
 - 비서에게 말로도 시킬 수 있다: "크롤링 시작해줘", "크롤링 끝났어?", "크롤러 URL 목록 보여줘", "이 URL 크롤링 대상에 추가해줘", "크롤러 일정 DB에 반영해줘"
+- 또는 슬래시 명령어로도 실행시킬수 있다
+| 명령어 | 동작 |
+|---|---|
+| `/crawl` | 학교 사이트 크롤링 시작 (끝나면 결과를 알려줌) |
+| `/crawl_status` | 크롤링 진행 상황·결과 |
+| `/crawl_import` | 크롤링한 일정을 일정 목록에 반영 |
+| `/crawl_urls` · `/crawl_add URL` · `/crawl_remove URL` | 크롤링 대상 목록·추가·삭제 |
+
 
 ### 전체 흐름
 ```
@@ -343,7 +351,7 @@ python -m lms sync && python -m lms raw
 ### `crawler/` — 크롤러 ↔ 팀 시스템 연결
 | 파일 | 하는 일 | 왜 이렇게 만들었나 |
 |---|---|---|
-| [\_\_main\_\_.py](crawler/__main__.py) | CLI: `set`, `add`, `remove`, `run`, `get`, `export` | 크롤러를 코드 수정 없이 설정·실행·확인할 수 있게. `my_scrapper` 자체 CLI 에 **공유 DB 로 보내는 `export`** 를 더했다. Gemini 키는 팀 `.env` 와 섞이지 않게 `.env.crawler` 에 따로 저장 |
+| [\_\_main\_\_.py](crawler/__main__.py) | CLI: `add`, `remove`, `run`, `get`, `export` | 크롤러를 실행·확인할 수 있다. |
 | [crawler_db_connect.py](crawler/crawler_db_connect.py) | 크롤러 DB 의 추출 일정 → 공유 `schedules` 로 옮김 | 공유 테이블 규칙대로 **`schedule_db.upsert_by_source` 만** 사용한다 (크롤러 일정 id 를 `source_id` 로 써서 여러 번 실행해도 중복이 안 생김). 일정 제목은 LLM 요약 대신 **원문 페이지 제목**을 쓴다. 옮긴 URL 은 비활성화 후 관련 데이터를 지워 재수집·재등록을 막는다 |
 
 ### `my_scrapper/` — 크롤러 패키지
