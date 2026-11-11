@@ -216,3 +216,16 @@ def test_crawler_actions_return_readable_messages(settings, monkeypatch):
 
     assert "삭제함" in bot.run_action("remove_crawler_urls", {"urls": ["https://a.example"]})
     assert "크롤링 대상 1곳" in bot.run_action("get_crawler_url_list", {})
+
+
+def test_crawl_result_guides_browser_install(settings):
+    class NoBrowserCrawler(FakeCrawler):
+        async def run(self):
+            raise RuntimeError("BrowserType.launch: Executable doesn't exist at /x/chrome\n"
+                               "Please run the following command to download new browsers: playwright install")
+
+    bot = ScheduleAssistant(settings, client=fake_client([])[0])
+    bot.crawler = NoBrowserCrawler()
+    bot.run_action("run_crawler", {})
+    bot.crawl_thread.join(timeout=5)
+    assert "python -m crawler install" in bot.run_action("get_crawl_result", {})

@@ -22,6 +22,7 @@ Gemini API로 "이번 주 마감 뭐 있어?" 같은 질문에 **1~2초 안에**
 ```bash
 python -m venv .venv && .venv\Scripts\activate       # (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
+python -m crawler install                             # 크롤러용 브라우저 설치 (처음 한 번)
 cp .env.example .env                                  # 키·토큰 입력 (아래 3장)
 ```
 | 하고 싶은 것 | 명령 |
@@ -89,6 +90,7 @@ cp .env.example .env                                  # 키·토큰 입력 (아�
 python -m venv .venv
 .venv\Scripts\activate                 # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
+python -m crawler install              # 크롤러용 브라우저(Chromium) 설치 (처음 한 번)
 cp .env.example .env                   # CANVAS_API_KEY, GEMINI_API_KEY 입력
 
 python -m lms sync                     # LMS 과제 수집 (지금 바로)
@@ -316,6 +318,7 @@ python -m lms sync && python -m lms raw
 ### 실행
 | 하고 싶은 것 | 명령 |
 |---|---|
+| **처음 한 번**: 크롤러용 브라우저 설치 | `python -m crawler install` |
 | 크롤링 시작점 URL 추가 | `python -m crawler add -u <URL> --description "학과 공지"` |
 | 시작점 URL 제거 (관련 데이터도 삭제) | `python -m crawler remove -u <URL>` |
 | 크롤링 실행 (전체 / 단계별) | `python -m crawler run` / `python -m crawler run -s crawl` |
@@ -323,6 +326,8 @@ python -m lms sync && python -m lms raw
 | 추출한 일정을 공유 DB 로 보내기 | `python -m crawler export` |
 | 크롤링 창을 띄워서 보기 | 명령에 `--debug` 추가 |
 
+- `pip install -r requirements.txt` 는 Playwright **라이브러리**만 설치한다. 크롤러가 실제로 띄울 **브라우저**는 `python -m crawler install` 로 따로 받아야 한다 (안 하면 크롤링 때 `Executable doesn't exist` 오류. 비서·봇도 이 경우 설치 방법을 안내한다).
+  Linux/WSL 에서 `missing dependencies` 오류가 나면 `sudo .venv/bin/python -m playwright install-deps chromium` 을 한 번 실행한다.
 - 텔레그램 봇이 켜져 있으면 **매일 `BOT_CRAWL_TIME`(기본 06:00)에 크롤링 → 공유 DB 반영**을 자동으로 한다.
 - 비서에게 말로도 시킬 수 있다: "크롤링 시작해줘", "크롤링 끝났어?", "크롤러 URL 목록 보여줘", "이 URL 크롤링 대상에 추가해줘", "크롤러 일정 DB에 반영해줘"
 - 또는 슬래시 명령어로도 실행시킬수 있다
@@ -351,7 +356,8 @@ python -m lms sync && python -m lms raw
 ### `crawler/` — 크롤러 ↔ 팀 시스템 연결
 | 파일 | 하는 일 | 왜 이렇게 만들었나 |
 |---|---|---|
-| [\_\_main\_\_.py](crawler/__main__.py) | CLI: `add`, `remove`, `run`, `get`, `export` | 크롤러를 실행·확인할 수 있다. |
+| [\_\_main\_\_.py](crawler/__main__.py) | CLI: `install`, `add`, `remove`, `run`, `get`, `export` | 크롤러를 실행·확인할 수 있다. |
+| [install.py](crawler/install.py) | Playwright 브라우저(Chromium) 설치, '브라우저 없음' 오류 판별 | pip 로는 브라우저가 설치되지 않아 처음 쓰는 팀원이 막히기 쉽다. 지금 쓰는 파이썬(.venv)의 Playwright 로 설치해 경로가 어긋나지 않게 하고, 브라우저가 없어 크롤링이 실패하면 비서·봇이 설치 방법을 안내한다 |
 | [crawler_db_connect.py](crawler/crawler_db_connect.py) | 크롤러 DB 의 추출 일정 → 공유 `schedules` 로 옮김 | 공유 테이블 규칙대로 **`schedule_db.upsert_by_source` 만** 사용한다 (크롤러 일정 id 를 `source_id` 로 써서 여러 번 실행해도 중복이 안 생김). 일정 제목은 LLM 요약 대신 **원문 페이지 제목**을 쓴다. 옮긴 URL 은 비활성화 후 관련 데이터를 지워 재수집·재등록을 막는다 |
 
 ### `my_scrapper/` — 크롤러 패키지

@@ -22,6 +22,7 @@ from lms.config import Settings
 
 from my_scrapper import WebScrapper
 from crawler.crawler_db_connect import import_schedules_from_crawler_db_to_common_db
+from crawler.install import is_browser_missing_error
 import asyncio
 import threading
 
@@ -182,6 +183,9 @@ class ScheduleAssistant:
         if self.crawl_thread.is_alive():
             return "⏳ 아직 크롤링 중이에요. 조금 뒤에 다시 물어봐 주세요."
         if self.crawl_error:
+            if is_browser_missing_error(self.crawl_error):
+                return ("⚠️ 크롤러용 브라우저가 설치되어 있지 않아요.\n"
+                        "PC 터미널에서 `python -m crawler install` 을 한 번 실행한 뒤 다시 시도해 주세요.")
             return f"⚠️ 크롤링 중 문제가 생겼어요: {self.crawl_error}"
         r = self.crawl_result or {}
         before, after = r.get("before", {}), r.get("after", {})

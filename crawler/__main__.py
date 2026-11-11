@@ -1,6 +1,7 @@
 """
 python -m crawler [그냥옵션] {행위에 필요한거...} <행위>
-<행위>: 
+<행위>:
+    install -> 크롤러가 쓰는 브라우저(Playwright Chromium)를 설치함 (처음 한 번)
     run -> 크롤러를 실행함
     add -> 시작점 url을 추가함
     remove -> url을 제거함(url이 시작점이 아닌경우에는 비활성화), url과 연관된 것들도 제거함
@@ -30,7 +31,7 @@ async def main():
     )
 
     # 행위
-    parser.add_argument("job", help="작업명: run|add|remove|get|export")
+    parser.add_argument("job", help="작업명: install|run|add|remove|get|export")
     # url
     parser.add_argument(
         "-u",
@@ -67,6 +68,10 @@ async def main():
     args = parser.parse_args()
     job, stage, target, url = args.job, args.stage, args.target, args.url
     debug = args.debug
+    if job == "install":
+        # 크롤러 DB 를 만들기 전에 처리 (브라우저 설치만 하고 끝)
+        from .install import install_browser
+        raise SystemExit(install_browser())
     # api_key 를 넘기지 않으면 환경 변수 GEMINI_API_KEY(팀 .env)를 사용한다
     scrapper = MiguScrapper(debug=debug)
     if job == "run":
