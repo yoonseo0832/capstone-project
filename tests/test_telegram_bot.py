@@ -191,3 +191,119 @@ def test_briefing_shows_only_new_notices(schedule_bot, settings):
     asyncio.run(schedule_bot.maybe_briefing(tg, datetime(2026, 10, 14, 10, 0)))
     latest = tg.sent[1][1]
     assert "📢 새 공지" in latest and "새중간고사공지" in latest and "기존공지" not in latest
+
+
+# ---------------------------------------------------------------- 크롤러 명령어 (가짜 비서·텔레그램)
+
+class FakeThread:
+    def __init__(self, alive):
+        self.alive = alive
+
+    def is_alive(self):
+        return self.alive
+
+
+class FakeCrawlAssistant:
+    """비서의 크롤러 함수 호출만 기록한다."""
+    def __init__(self):
+        self.calls = []
+        self.crawl_thread = None
+
+    def run_action(self, name, args):
+        self.calls.append((name, args))
+        if name == "run_crawler":
+            self.crawl_thread = FakeThread(alive=True)
+        return f"<{name}>"
+
+
+class FakeJob:
+    def __init__(self, callback, name, data):
+        self.callback, self.name, self.data, self.removed = callback, name, data, False
+
+    def schedule_removal(self):
+        self.removed = True
+
+
+class FakeJobQueue:
+    def __init__(self):
+        self.jobs = []
+
+    def run_repeating(self, callback, interval, first, name, data):
+        self.jobs.append(FakeJob(callback, name, data))
+
+    def get_jobs_by_name(self, name):
+        return [j for j in self.jobs if j.name == name and not j.removed]
+
+
+class FakeChat:
+    async def send_action(self, action):
+        pass
+
+
+class FakeMessage:
+    def __init__(self):
+        self.replies = []
+
+    async def reply_text(self, text, **kwargs):
+        self.replies.append(text)
+
+
+class FakeUpdate:
+    def __init__(self):
+        self.effective_chat = FakeChat()
+        self.effective_message = FakeMessage()
+
+
+class FakeContext:
+    def __init__(self, job_queue, args=None, job=None, bot=None):
+        self.job_queue, self.args, self.job, self.bot = job_queue, args or [], job, bot
+
+
+@pytest.fixture
+def crawl_bot(settings, bot_settings):
+    import telegram_bot.app as app_mod
+    return app_mod.ScheduleBot(settings, bot_settings, assistant=FakeCrawlAssistant())
+
+
+def test_crawl_add_and_remove_need_url(crawl_bot):
+    up = FakeUpdate()
+    asyncio.run(crawl_bot.cmd_crawl_add(up, FakeContext(FakeJobQueue())))
+    assert "URL을 함께 보내 주세요" in up.effective_message.replies[0] and crawl_bot.assistant.calls == []
+
+    asyncio.run(crawl_bot.cmd_crawl_add(up, FakeContext(FakeJobQueue(), args=["https://a", "https://b"])))
+    asyncio.run(crawl_bot.cmd_crawl_remove(up, FakeContext(FakeJobQueue(), args=["https://a"])))
+    assert crawl_bot.assistant.calls == [("add_crawler_urls", {"urls": ["https://a", "https://b"]}),
+                                         ("remove_crawler_urls", {"urls": ["https://a"]})]
+    assert up.effective_message.replies[-1] == "<remove_crawler_urls>"
+
+
+def test_crawl_command_notifies_when_done(crawl_bot):
+    jq, up = FakeJobQueue(), FakeUpdate()
+    asyncio.run(crawl_bot.cmd_crawl(up, FakeContext(jq)))
+    assert up.effective_message.replies == ["<run_crawler>"]
+    assert len(jq.get_jobs_by_name("crawl_watch")) == 1
+    assert crawl_bot.watch_crawl(jq) is False  # 이미 확인 중이면 하나만
+
+    job, tg = jq.jobs[0], FakeBot()
+    asyncio.run(crawl_bot.check_crawl_done(FakeContext(jq, job=job, bot=tg)))
+    assert tg.sent == [] and not job.removed  # 아직 진행 중
+
+    crawl_bot.assistant.crawl_thread.alive = False
+    asyncio.run(crawl_bot.check_crawl_done(FakeContext(jq, job=job, bot=tg)))
+    assert job.removed and tg.sent == [(1, "<get_crawl_result>")]
+
+
+def test_scheduled_crawl_imports_silently_and_skips_if_running(crawl_bot):
+    jq = FakeJobQueue()
+    asyncio.run(crawl_bot.scheduled_crawl(FakeContext(jq)))
+    job = jq.jobs[0]
+    assert job.data == {"auto_import": True, "notify": False}
+
+    asyncio.run(crawl_bot.scheduled_crawl(FakeContext(jq)))  # 진행 중이면 다시 시작하지 않음
+    assert [c[0] for c in crawl_bot.assistant.calls] == ["run_crawler"]
+
+    crawl_bot.assistant.crawl_thread.alive = False
+    tg = FakeBot()
+    asyncio.run(crawl_bot.check_crawl_done(FakeContext(jq, job=job, bot=tg)))
+    assert [c[0] for c in crawl_bot.assistant.calls] == ["run_crawler", "get_crawl_result", "import_from_crawler"]
+    assert tg.sent == []  # 새벽 예약 크롤링은 메시지를 보내지 않음

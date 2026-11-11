@@ -17,6 +17,7 @@ python -m my_scrapper [그냥옵션] {행위에 필요한거...} <행위>
 """
 
 import argparse
+import asyncio
 from dotenv import get_key, set_key
 from pathlib import Path
 
@@ -88,11 +89,12 @@ def main():
     scrapper = MiguScrapper(api_key=get_key(env_path, "API_KEY"),debug=debug)
     if job == "run":
         match stage:
-            case "crawl": scrapper.crawl()
-            case "fetch_contents" : scrapper.fetch_contents()
+            # crawl/fetch_contents/run 은 async 함수라 asyncio.run 으로 실행해야 실제로 동작한다
+            case "crawl": asyncio.run(scrapper.crawl())
+            case "fetch_contents" : asyncio.run(scrapper.fetch_contents())
             case "filter_urls" : scrapper.filter_urls()
             case "extract_schedules" : scrapper.extract_schedules()
-            case "all" : scrapper.run()
+            case "all" : asyncio.run(scrapper.run())
         return
     if job == "add" or job == "remove":
         if url is None: 

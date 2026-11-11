@@ -164,3 +164,55 @@ def test_actions_add_update_delete_and_bad_date(settings):
     assert "날짜 형식" in bot.run_action("update_schedule", {"schedule_id": row["id"], "due_at": "내일"})
     assert "삭제함" in bot.run_action("delete_schedule", {"schedule_id": row["id"]})
     assert "찾지 못했어요" in bot.run_action("delete_schedule", {"schedule_id": 999})
+
+
+class FakeCrawler:
+    """실제 브라우저·Gemini 없이 크롤러 동작만 흉내 낸다."""
+    def __init__(self):
+        self.sources = []
+        self.stats = {"sources": 0, "total_urls": 10, "raw_contents": 10,
+                      "filtered_urls": 3, "extracted_schedules": 2}
+
+    def get_stats(self):
+        return dict(self.stats)
+
+    async def run(self):
+        self.stats.update(total_urls=37, filtered_urls=9, extracted_schedules=6)
+        return dict(self.stats)
+
+    def get_sources(self):
+        return self.sources
+
+    def add_sources(self, urls):
+        self.sources += [SimpleNamespace(url=u, title="") for u in urls]
+
+    def remove_sources(self, urls):
+        self.sources = [o for o in self.sources if o.url not in urls]
+
+
+def test_crawler_actions_return_readable_messages(settings, monkeypatch):
+    bot = ScheduleAssistant(settings, client=fake_client([])[0])
+    bot.crawler = FakeCrawler()
+
+    assert "실행한 크롤링이 없어요" in bot.run_action("get_crawl_result", {})
+    assert "등록된 크롤링 대상이 없어요" in bot.run_action("get_crawler_url_list", {})
+
+    added = bot.run_action("add_crawler_urls", {"urls": ["https://a.example", "https://b.example"]})
+    assert "- https://a.example" in added and "[" not in added  # 리스트 repr 이 그대로 보이지 않음
+    assert "크롤링 대상 2곳" in bot.run_action("get_crawler_url_list", {})
+
+    assert "시작했어요" in bot.run_action("run_crawler", {})
+    bot.crawl_thread.join(timeout=5)
+    result = bot.run_action("get_crawl_result", {})
+    assert "크롤링 완료" in result
+    assert "새로 찾은 페이지: 27개" in result and "새로 추출한 일정: 4개" in result
+
+    monkeypatch.setattr("assistant.bot.import_schedules_from_crawler_db_to_common_db",
+                        lambda crawler, path: [(1, "inserted"), (2, "updated")])
+    assert bot.run_action("import_from_crawler", {}) == "📥 크롤러 일정 반영: 새로 추가 1개, 갱신 1개"
+    monkeypatch.setattr("assistant.bot.import_schedules_from_crawler_db_to_common_db",
+                        lambda crawler, path: [])
+    assert "가져올 새 일정이 없어요" in bot.run_action("import_from_crawler", {})
+
+    assert "삭제함" in bot.run_action("remove_crawler_urls", {"urls": ["https://a.example"]})
+    assert "크롤링 대상 1곳" in bot.run_action("get_crawler_url_list", {})

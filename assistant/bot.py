@@ -7,7 +7,9 @@
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
 from datetime import datetime
 from typing import Callable, Iterator
 
@@ -22,6 +24,8 @@ from my_scrapper import WebScrapper
 from crawler.crawler_db_connect import import_schedules_from_crawler_db_to_common_db
 import asyncio
 import threading
+
+log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gemini-2.5-flash-lite"
 # 기본 모델이 과부하(503)/한도초과(429)면 순서대로 시도. .env GEMINI_FALLBACK_MODELS=a,b 로 변경
@@ -130,7 +134,7 @@ class ScheduleAssistant:
         # 크롤러 생성
         self.crawler = WebScrapper(api_key=key, gemini_model=self.model) # 일단 기본 경로 사용(./scrapper.db)
         self.crawl_thread: threading.Thread | None = None # 진행중인 크롤러 스레드
-        self.crawl_result: str | None = None
+        self.crawl_result: dict | None = None  # {"before": 통계, "after": 통계, "elapsed": 초}
         self.crawl_error: str | None = None
         self.actions: dict[str, Callable[..., str]] = {
             "complete_schedules": self._complete, "add_schedule": self._add,
@@ -146,18 +150,22 @@ class ScheduleAssistant:
 
     # ------------------------------------------------------------ 함수 실행 (결과 문장은 코드가 생성)
 
-    # 크롤러 함수들
-    def _extract_schedules_from_crawler(self) -> str: # 일단 실행됬는지 여부만 반환함, 결과 및 상태는 따로 확인해야됨
-        print("ScheduleAssistant:_extract_schedules_from_crawler 호출됨")
+    # 크롤러 함수들 (반환 문장이 그대로 사용자에게 보이므로 사람이 읽기 좋은 문장으로 만든다)
+    def _extract_schedules_from_crawler(self) -> str:
+        """크롤링은 수 분이 걸려 별도 스레드에서 돌리고, 바로 '시작함'을 답한다."""
         if self.crawl_thread and self.crawl_thread.is_alive():
-            return "이미 진행중인 크롤링이 있음"
+            return "🔎 이미 크롤링이 진행 중이에요. \"크롤링 끝났어?\"라고 물어보면 진행 상황을 알려 드릴게요."
 
         def _run():
+            started = time.monotonic()
             try:
-                ret = asyncio.run(self.crawler.run())
-                self.crawl_result = str(ret)
+                before = self.crawler.get_stats()
+                after = asyncio.run(self.crawler.run())
+                self.crawl_result = {"before": before, "after": after,
+                                     "elapsed": time.monotonic() - started}
                 self.crawl_error = None
             except Exception as e:
+                log.exception("크롤링 실패")
                 self.crawl_error = str(e)
                 self.crawl_result = None
 
@@ -165,46 +173,72 @@ class ScheduleAssistant:
         self.crawl_error = None
         self.crawl_thread = threading.Thread(target=_run, daemon=True)
         self.crawl_thread.start()
-        return "크롤링 시작됨"
+        return ("🔎 크롤링을 시작했어요. 사이트에 따라 몇 분 걸려요.\n"
+                "\"크롤링 끝났어?\"라고 물어보면 결과를 알려 드릴게요.")
+
+    def _get_crawl_result(self) -> str:
+        if self.crawl_thread is None:
+            return "아직 실행한 크롤링이 없어요. \"크롤링 시작해줘\"라고 하면 시작할게요."
+        if self.crawl_thread.is_alive():
+            return "⏳ 아직 크롤링 중이에요. 조금 뒤에 다시 물어봐 주세요."
+        if self.crawl_error:
+            return f"⚠️ 크롤링 중 문제가 생겼어요: {self.crawl_error}"
+        r = self.crawl_result or {}
+        before, after = r.get("before", {}), r.get("after", {})
+        new = {k: after.get(k, 0) - before.get(k, 0) for k in after}
+        minutes, seconds = divmod(int(r.get("elapsed", 0)), 60)
+        lines = [
+            f"✅ 크롤링 완료 ({minutes}분 {seconds}초)",
+            f"- 새로 찾은 페이지: {max(new.get('total_urls', 0), 0)}개",
+            f"- 공지로 분류된 페이지: {max(new.get('filtered_urls', 0), 0)}개",
+            f"- 새로 추출한 일정: {max(new.get('extracted_schedules', 0), 0)}개",
+        ]
+        if after.get("extracted_schedules", 0) > 0:
+            lines.append("\"크롤러 일정 반영해줘\"라고 하면 일정 목록에 넣어 드릴게요.")
+        return "\n".join(lines)
 
     def _import_from_crawler(self) -> str:
-        print("ScheduleAssistant:_import_from_crawler 호출됨")
         try:
-            import_schedules_from_crawler_db_to_common_db(self.crawler, str(self.settings.schedule_db))
+            results = import_schedules_from_crawler_db_to_common_db(
+                self.crawler, str(self.settings.schedule_db))
         except Exception as e:
-            return f"크롤러로 부터 추출된 일정을 가져오는데 실패했습니다: e:{e}"
-        return "크롤러로 부터 일정을 가져오기 성공"
-        
-    def _get_crawl_result(self) -> str:
-        print("ScheduleAssistant:_get_crawl_result 호출됨")
-        if self.crawl_thread is None:
-            print("진행중인 크롤링이 없음")
-            return "진행중인 크롤링이 없음"
-        if self.crawl_thread.is_alive():
-            print("아직 크롤링이 진행중임")
-            return "아직 크롤링이 진행중임"
-        if self.crawl_error:
-            print("크롤링 실패")
-            return f"크롤링 실패: {self.crawl_error}"
-        print(f"크롤링 결과: {self.crawl_result}")
-        return f"크롤링 결과: {self.crawl_result}"
+            log.exception("크롤러 일정 반영 실패")
+            return f"⚠️ 크롤러 일정을 가져오지 못했어요: {e}"
+        if not results:
+            return "가져올 새 일정이 없어요. 크롤링을 먼저 실행해 보세요."
+        inserted = sum(1 for _, action in results if action == "inserted")
+        updated = len(results) - inserted
+        return f"📥 크롤러 일정 반영: 새로 추가 {inserted}개, 갱신 {updated}개"
+
     def _get_sources(self) -> str:
-        print("ScheduleAssistant:_get_sources 호출됨")
-        return ", ".join([f"{obj.url}:{obj.title}" for obj in self.crawler.get_sources()])
-    def _remove_sources(self, urls:list[str]) -> str:
-        print("ScheduleAssistant:_remove_sources 호출됨")
+        sources = self.crawler.get_sources()
+        if not sources:
+            return "등록된 크롤링 대상이 없어요. URL을 알려 주시면 추가할게요."
+        lines = [f"🌐 크롤링 대상 {len(sources)}곳"]
+        for i, obj in enumerate(sources, 1):
+            lines.append(f"{i}. {obj.title} | {obj.url}" if obj.title else f"{i}. {obj.url}")
+        return "\n".join(lines)
+
+    def _remove_sources(self, urls: list[str]) -> str:
+        if not urls:
+            return "삭제할 URL을 알려 주세요."
         try:
             self.crawler.remove_sources(urls)
         except Exception as e:
-            return f"url제거 실패: e:{e}"
-        return f"🗑️ 삭제함: {urls}"
-    def _add_sources(self, urls:list[str])->str:
-        print("ScheduleAssistant:_add_sources 호출됨")
+            log.exception("크롤링 대상 삭제 실패")
+            return f"⚠️ 크롤링 대상을 삭제하지 못했어요: {e}"
+        return "🗑️ 크롤링 대상에서 삭제함:\n" + "\n".join(f"- {u}" for u in urls)
+
+    def _add_sources(self, urls: list[str]) -> str:
+        if not urls:
+            return "추가할 URL을 알려 주세요."
         try:
             self.crawler.add_sources(urls)
         except Exception as e:
-            return f"url추가 실패: e:{e}"
-        return f"➕ 추가함: {urls}"
+            log.exception("크롤링 대상 추가 실패")
+            return f"⚠️ 크롤링 대상을 추가하지 못했어요: {e}"
+        return ("➕ 크롤링 대상에 추가함:\n" + "\n".join(f"- {u}" for u in urls)
+                + "\n다음 크롤링부터 함께 수집해요.")
 
 
     def _complete(self, ids: list[int]) -> str:

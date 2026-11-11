@@ -309,6 +309,57 @@ python -m lms sync && python -m lms raw
 - [ ] LearningX 는 비공식 API라 LMS 업데이트 시 점검 필요 (실패해도 과제·Canvas 공지는 계속되도록 이미 분리)
 - [ ] 정식 서비스로 간다면: 사용자별 LMS 토큰 입력(또는 학교 OAuth Developer Key), 토큰 암호화 저장, `schedules` 에 `user_id` 추가 — **캡스톤 시연 범위에서는 하지 않음**
 
-### 🤝 팀원 크롤러 병합 (예정)
-팀원이 담당하는 **다른 사이트 크롤러**(학과 공지 등)를 이 시스템에 합칠 예정이다. 구조상 **추가 작업이 거의 없다**:
-크롤러가 수집한 일정을 [common/schedule_db.py](common/schedule_db.py) `upsert_by_source(source="crawler:<사이트>", ...)` 로 **공유 `schedules` 테이블에 넣기만 하면** 비서·봇이 자동으로 함께 답한다 (넣는 법은 4장). 원본 데이터는 크롤러가 자기 DB에 두고, 공유 테이블에는 일정만 올린다. 완료 일정 자정 삭제·재등록 방지도 동일하게 적용된다.
+### 🤝 팀원 크롤러 병합 (완료)
+## 크롤러 (담당: oudedong)
+
+> 학과·단과대 등 **LMS 밖의 학교 사이트 공지**를 수집해 일정을 추출하고, 공유 `schedules` 테이블에 넣는다.
+
+### 실행
+| 하고 싶은 것 | 명령 |
+|---|---|
+| 크롤링 시작점 URL 추가 | `python -m crawler add -u <URL> --description "학과 공지"` |
+| 시작점 URL 제거 (관련 데이터도 삭제) | `python -m crawler remove -u <URL>` |
+| 크롤링 실행 (전체 / 단계별) | `python -m crawler run` / `python -m crawler run -s crawl` |
+| 수집 결과 확인 | `python -m crawler get -t source_urls\|urls\|filtered_urls\|schedules` |
+| 추출한 일정을 공유 DB 로 보내기 | `python -m crawler export` |
+| 크롤링 창을 띄워서 보기 | 명령에 `--debug` 추가 |
+
+- 텔레그램 봇이 켜져 있으면 **매일 `BOT_CRAWL_TIME`(기본 06:00)에 크롤링 → 공유 DB 반영**을 자동으로 한다.
+- 비서에게 말로도 시킬 수 있다: "크롤링 시작해줘", "크롤링 끝났어?", "크롤러 URL 목록 보여줘", "이 URL 크롤링 대상에 추가해줘", "크롤러 일정 DB에 반영해줘"
+
+### 전체 흐름
+```
+ [시작점 URL] ─▶ ① 크롤링: 화면 요소를 직접 클릭하며 하위 페이지 탐색 ─▶ url
+                ② 본문 수집: 방문 안 한 URL만 열어 HTML 정제          ─▶ raw_content
+                ③ 필터링: 공지·모집·마감 등 키워드로 공지 페이지 선별   ─▶ filtered_url
+                ④ 일정 추출: Gemini 로 제목·기간·대상·할 일 JSON 추출  ─▶ extracted_schedules
+                                                     (여기까지 scrapper.db, 크롤러 원본 DB)
+                                                              │ export
+                                                              ▼
+                                            schedule.db / schedules  ◀── 팀 공유
+```
+단계마다 결과를 `scrapper.db` 에 저장하고 **이미 처리한 것은 건너뛰기** 때문에, 중간에 멈춰도 그 단계부터 이어서 실행된다. 공유 DB 로 보낸 일정의 URL 은 비활성화하고 관련 데이터를 지워서 **다음 크롤링 때 같은 일정이 다시 올라가지 않는다**.
+
+### `crawler/` — 크롤러 ↔ 팀 시스템 연결
+| 파일 | 하는 일 | 왜 이렇게 만들었나 |
+|---|---|---|
+| [\_\_main\_\_.py](crawler/__main__.py) | CLI: `set`, `add`, `remove`, `run`, `get`, `export` | 크롤러를 코드 수정 없이 설정·실행·확인할 수 있게. `my_scrapper` 자체 CLI 에 **공유 DB 로 보내는 `export`** 를 더했다. Gemini 키는 팀 `.env` 와 섞이지 않게 `.env.crawler` 에 따로 저장 |
+| [crawler_db_connect.py](crawler/crawler_db_connect.py) | 크롤러 DB 의 추출 일정 → 공유 `schedules` 로 옮김 | 공유 테이블 규칙대로 **`schedule_db.upsert_by_source` 만** 사용한다 (크롤러 일정 id 를 `source_id` 로 써서 여러 번 실행해도 중복이 안 생김). 일정 제목은 LLM 요약 대신 **원문 페이지 제목**을 쓴다. 옮긴 URL 은 비활성화 후 관련 데이터를 지워 재수집·재등록을 막는다 |
+
+### `my_scrapper/` — 크롤러 패키지
+크롤러가 쓰는 패키지로 [개인 저장소](https://github.com/oudedong/my_scrapper)와 `git subtree` 로 동기화한다.
+
+| 파일 | 하는 일 | 왜 이렇게 만들었나 |
+|---|---|---|
+| [scrapper.py](my_scrapper/scrapper.py) | `MiguScrapper`(= `WebScrapper`): 4단계 파이프라인과 시작점 추가·삭제, URL 비활성화, 결과 조회를 묶은 **유일한 입구** | 팀 코드는 내부 구조를 몰라도 이 클래스만 쓰면 된다. 단계별 메서드(`crawl`, `fetch_contents`, `filter_urls`, `extract_schedules`)를 따로 둬서 일부만 다시 돌릴 수 있다. `debug=True` 면 브라우저 창을 띄워 동작을 눈으로 확인 |
+| [core/locator.py](my_scrapper/core/locator.py) | 클릭할 요소 찾기, **화면 안정화 감지** | 동적 페이지는 로드 직후에도 요소가 계속 바뀐다. 0.1초마다 요소 목록을 비교해 **잠깐 나타났다 사라진 요소는 제외**하고, 1초간 변화가 없으면 안정화로 본다. 그 뒤 **시험 클릭**으로 실제로 눌리는 요소만 남긴다 → 탐색이 멈추거나 요소를 놓치던 문제 해결 |
+| [core/session.py](my_scrapper/core/session.py) | 브라우저 세션, 페이지 상태 기록·**복원**, iframe 안정화 | 브라우저 화면 상태(펼친 메뉴 등)는 저장할 수 없어서, **페이지 주소 + 실행한 클릭 기록**을 저장해 두고 재생해서 되돌린다. 로그인 세션은 `session.json` 에 저장해 재사용 |
+| [core/commands.py](my_scrapper/core/commands.py) | `Click` / `Fill` 명령 | 위 복원을 위해 클릭·입력을 **다시 실행 가능한 단위**로 만들었다 |
+| [crawler/click_explorer.py](my_scrapper/crawler/click_explorer.py) | 한 페이지 안에서 클릭으로 탐색 (스택) | 링크(`href`)가 없는 탭·JS 버튼·드롭다운 뒤의 게시판도 찾기 위해. 클릭 결과를 페이지 이동 / iframe 변화 / 요소 변화로 나눠, **새로 생긴 요소만** 다음 후보로 쌓는다. 복원에 실패하면 그 구간의 후보는 버린다 |
+| [crawler/url_crawler.py](my_scrapper/crawler/url_crawler.py) | 페이지 단위 탐색 (큐 + 최대 깊이) | 새로 찾은 페이지는 너비 우선으로 돌고, 깊이 제한으로 사이트 전체를 끝없이 도는 것을 막는다. 로그아웃·언어 변경 같은 링크는 키워드로 제외 |
+| [pipeline/html_cleaner.py](my_scrapper/pipeline/html_cleaner.py) | HTML 정제 | `script`·`style`·헤더·푸터·불필요한 속성과 공백을 지워 **LLM 에 넘기는 토큰을 줄인다** |
+| [pipeline/content_collector.py](my_scrapper/pipeline/content_collector.py) | 본문 수집 | 게시판이 iframe 안에 있어도 본문이 빠지지 않게 **iframe 내용을 부모 문서에 병합**한다 |
+| [pipeline/filter.py](my_scrapper/pipeline/filter.py) | 키워드 필터 | 수집한 모든 페이지를 LLM 에 보내면 느리고 무료 한도를 쓰므로, 공지·모집·장학 등 키워드가 있는 페이지만 다음 단계로 보낸다 |
+| [pipeline/extractor.py](my_scrapper/pipeline/extractor.py) | Gemini 로 일정 추출 (+ 키 없이 쓰는 Mock) | JSON 응답 형식을 지정해 파싱 실패를 줄였다. **게시판 목록 페이지에서는 일정을 뽑지 않게**(여러 글의 날짜가 섞임), 한 공지에 일정이 여럿이면 나눠 뽑게 프롬프트에 명시. 키가 없으면 Mock 으로 동작해 개발·테스트 가능 |
+| [storage/](my_scrapper/storage/) | `scrapper.db`(SQLAlchemy): `url`, `raw_content`, `filtered_url`, `extracted_schedules` | 단계별 진행 상태를 저장해 **이어서 실행**할 수 있게. 저장소를 인터페이스로 분리해 메모리/DB 구현을 바꿔 끼울 수 있다. URL 비활성화(`is_activate`)로 이미 공유 DB 에 보낸 것을 구분 |
+| [\_\_main\_\_.py](my_scrapper/__main__.py) | 패키지 단독 CLI | 팀 시스템 없이 크롤러만 시험할 때 사용 (공유 DB 연동이 필요하면 `python -m crawler`) |

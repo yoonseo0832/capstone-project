@@ -4,22 +4,20 @@ python -m crawler [그냥옵션] {행위에 필요한거...} <행위>
     run -> 크롤러를 실행함
     add -> 시작점 url을 추가함
     remove -> url을 제거함(url이 시작점이 아닌경우에는 비활성화), url과 연관된 것들도 제거함
-    set -> 설정을 추가함(설정파일에 추가 후)
     get -> 원하는 내용을 가져옴
     export -> 추출된 일정을 공유db로 보냄!!!!
 {행위에 필요한거}:
     --url|-u <url>
     --description <url에 대한 설명>
-    --key|-k <제미니 api키>
     --stage|-s <crawl|fetch_contents|filter_urls|extract_schedules|all> : 수행할 단계
     --target|-t <source_urls|urls|filtered_urls|schedules> : 가져올 대상
 [그냥옵션]
     --debug : 디버그 모드(기본값: False, 활성화 시 크롤링창이 보임)
+
+Gemini 키는 팀 .env 의 GEMINI_API_KEY 를 함께 쓴다 (lms.config 를 import 할 때 .env 가 로드됨).
 """
 
 import argparse
-from dotenv import get_key, set_key
-from pathlib import Path
 from lms.config import load_settings
 
 import asyncio
@@ -32,7 +30,7 @@ async def main():
     )
 
     # 행위
-    parser.add_argument("job", help="작업명: run|add|remove|set|get|export")
+    parser.add_argument("job", help="작업명: run|add|remove|get|export")
     # url
     parser.add_argument(
         "-u",
@@ -45,13 +43,6 @@ async def main():
         "--description",
         type=str,
         help="url 에 대한 설명",
-    )
-    # key
-    parser.add_argument(
-        "-k",
-        "--key",
-        type=str,
-        help="제미니 api키",
     )
     # stage
     parser.add_argument(
@@ -73,23 +64,11 @@ async def main():
         "--debug", action="store_true", help="크롤링창을 띄움"
     )
 
-    # env
-    env_path = Path(".env.crawler")
-    if not env_path.exists():
-        env_path.touch()
-
     args = parser.parse_args()
-    job, stage, target, url, key, target = args.job, args.stage, args.target, args.url, args.key, args.target
+    job, stage, target, url = args.job, args.stage, args.target, args.url
     debug = args.debug
-    print(f"debug: {debug}")
-    if job == "set":
-        if not key: 
-            print("키를 제공해 주세요")
-            return
-        set_key(env_path, "API_KEY", key)
-        print("키 설정완료")
-        return
-    scrapper = MiguScrapper(api_key=get_key(env_path, "API_KEY"),debug=(not debug))
+    # api_key 를 넘기지 않으면 환경 변수 GEMINI_API_KEY(팀 .env)를 사용한다
+    scrapper = MiguScrapper(debug=debug)
     if job == "run":
         match stage:
             case "crawl": await scrapper.crawl()

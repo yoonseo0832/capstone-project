@@ -7,3 +7,4 @@ workspace/data/
 *.db
 .pytest_cache/
 
+*.patch

@@ -1,4 +1,6 @@
-from common.schedule_db import add_schedule, upsert_by_source
+from urllib.parse import urlparse
+
+from common.schedule_db import upsert_by_source
 from my_scrapper.scrapper import MiguScrapper     # 크롤러 인터페이스
 from my_scrapper.storage import ExtractedSchedule # 크롤링된 일정
 
@@ -10,7 +12,7 @@ def import_schedules_from_crawler_db_to_common_db(scrapper: MiguScrapper, path:s
         scrapper: 크롤러 db와 연결된 크롤러
         path: 통합db의 경로
     출력:
-        옮겨진 일정들의 id
+        옮겨진 일정들의 (공유db id, "inserted"|"updated") 목록
     """
     # url로부터 페이지 제목 매핑해놓음
     url_list = scrapper.get_filtered_urls()
@@ -26,14 +28,15 @@ def import_schedules_from_crawler_db_to_common_db(scrapper: MiguScrapper, path:s
     for schedule in schedules:
         # 필드 찾기
         url = schedule.url
-        title = url_title_dict[url] or url # 제목이 없으면 그냥 url사용
+        title = url_title_dict.get(url) or url # 필터 목록에 없거나 제목이 없으면 url사용
         content = schedule.summary
         due_at = schedule.end_date
         start_at = schedule.start_date
-        source = 'crawl'
+        source = f"crawler:{urlparse(url).netloc or 'unknown'}" # 팀 규칙: crawler:<사이트>
         source_id = schedule.id
         # 넣기
-        rets.append(upsert_by_source(path, source, str(source_id), title, content, due_at, start_at, url))
+        rets.append(upsert_by_source(path, source=source, source_id=str(source_id), title=title,
+                                     content=content, due_at=due_at, start_at=start_at, url=url))
         # 크롤러 db에서 해당하는 url 비활성화(재수집 방지)
         scrapper.deactivate_url(url)
     # 비활성화된 url관련된 것들 삭제 

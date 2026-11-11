@@ -3,7 +3,9 @@
 - 일반 메시지   → 일정 비서(assistant)가 답변 (Gemini)
 - /today /week → DB 에서 바로 (LLM 없음, 즉시)
 - /sync        → LMS 지금 수집
+- /crawl...    → 크롤러 실행·결과·반영·대상 URL 관리 (비서의 크롤러 기능을 그대로 사용)
 - 주기 확인(기본 5분): 아침 브리핑(하루 1번), 마감 N시간 전 알림
+- 매일 BOT_CRAWL_TIME: 크롤링 → 끝나면 공유 DB 에 자동 반영
 - TELEGRAM_CHAT_ID 가 아닌 대화는 전부 무시 (혼자 쓰는 봇)
 
 비서·LMS 수집은 동기(blocking) 코드라 asyncio.to_thread 로 돌려서 봇이 멈추지 않게 한다.
@@ -13,19 +15,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, time
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from dotenv import get_key
 from telegram import BotCommand, LinkPreviewOptions, Update
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, JobQueue, MessageHandler, filters
 
 from assistant.bot import ScheduleAssistant
-from crawler.crawler_db_connect import import_schedules_from_crawler_db_to_common_db
-from lms.config import PROJECT_ROOT, Settings, load_settings
+from lms.config import Settings, load_settings
 from lms.sync import init_all, sync_lms
-from my_scrapper import WebScrapper
 from telegram_bot import messages, state
 from telegram_bot.config import BotSettings, load_bot_settings
 
@@ -37,12 +35,24 @@ COMMANDS = [
     BotCommand("week", "이번 주 마감"),
     BotCommand("notice", "최근 공지"),
     BotCommand("sync", "LMS 지금 새로고침"),
+    BotCommand("crawl", "학교 사이트 크롤링 시작"),
+    BotCommand("crawl_status", "크롤링 진행 상황·결과"),
+    BotCommand("crawl_import", "크롤링한 일정을 일정 목록에 반영"),
+    BotCommand("crawl_urls", "크롤링 대상 목록"),
+    BotCommand("crawl_add", "크롤링 대상 추가: /crawl_add URL"),
+    BotCommand("crawl_remove", "크롤링 대상 삭제: /crawl_remove URL"),
     BotCommand("help", "사용법"),
 ]
 HELP = ("📅 일정 비서예요. 그냥 말로 물어보세요.\n"
         "예) 이번 주 마감 뭐 있어? / 중간고사 언제야? / Week 04 Lab 끝냈어 / 10월 20일 3시 캡스톤 회의 추가해줘\n\n"
         "/today 오늘 마감\n/week 이번 주 마감\n/notice 최근 공지\n/sync LMS 지금 새로고침\n\n"
+        "🔎 학교 사이트 크롤러\n"
+        "/crawl 크롤링 시작 (끝나면 결과를 알려드려요)\n/crawl_status 진행 상황·결과\n"
+        "/crawl_import 크롤링한 일정을 일정 목록에 반영\n/crawl_urls 크롤링 대상 목록\n"
+        "/crawl_add URL 대상 추가 (여러 개는 띄어쓰기로)\n/crawl_remove URL 대상 삭제\n\n"
         "아침 브리핑과 마감 알림은 자동으로 보내드려요. 새 공지도 아침에 함께 알려드려요.")
+CRAWL_WATCH_JOB = "crawl_watch"   # 크롤링이 끝났는지 주기적으로 확인하는 작업 이름
+CRAWL_WATCH_SECONDS = 30
 
 
 class ScheduleBot:
@@ -86,11 +96,45 @@ class ScheduleBot:
             log.exception("수동 수집 실패")
             await self.reply(update, f"⚠️ LMS 수집 실패: {e}")
 
+    # 크롤러 명령어: 비서(assistant)의 크롤러 함수를 그대로 호출한다.
+    # → 말로 시킨 것과 /명령어로 시킨 것이 같은 크롤러·같은 진행 상태를 공유하고, 응답 문장도 같다.
+
+    async def _crawler_action(self, update: Update, name: str, args: dict | None = None) -> None:
+        await update.effective_chat.send_action(ChatAction.TYPING)
+        text = await asyncio.to_thread(self.assistant.run_action, name, args or {})
+        await self.reply(update, text)
+
+    async def cmd_crawl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._crawler_action(update, "run_crawler")
+        self.watch_crawl(context.job_queue)  # 끝나면 결과를 먼저 보내준다
+
+    async def cmd_crawl_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._crawler_action(update, "get_crawl_result")
+
+    async def cmd_crawl_import(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._crawler_action(update, "import_from_crawler")
+
+    async def cmd_crawl_urls(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._crawler_action(update, "get_crawler_url_list")
+
+    async def cmd_crawl_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not context.args:  # context.args = 명령어 뒤에 띄어쓰기로 붙은 단어들
+            await self.reply(update, "추가할 URL을 함께 보내 주세요.\n예) /crawl_add https://software.korea.ac.kr/notice")
+            return
+        await self._crawler_action(update, "add_crawler_urls", {"urls": list(context.args)})
+
+    async def cmd_crawl_remove(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not context.args:
+            await self.reply(update, "삭제할 URL을 함께 보내 주세요. 등록된 URL은 /crawl_urls 로 볼 수 있어요.")
+            return
+        await self._crawler_action(update, "remove_crawler_urls", {"urls": list(context.args)})
+
     async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_chat.send_action(ChatAction.TYPING)
         question = update.effective_message.text
         answer = await asyncio.to_thread(lambda: "".join(self.assistant.ask(question)))
         await self.reply(update, answer.strip() or "(답변이 비어 있어요. 다시 물어봐 주세요)")
+        self.watch_crawl(context.job_queue)  # "크롤링 시작해줘" 처럼 말로 시작한 경우에도 끝나면 알림
 
     async def on_stranger(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat = update.effective_chat
@@ -98,26 +142,42 @@ class ScheduleBot:
 
     # ------------------------------------------------------------ 주기 작업
 
-    async def scheduled_crawl(self, context: ContextTypes.DEFAULT_TYPE) -> bool:
-        """매일 정해진 시각(오전 6시)에 호출되어 크롤링 및 공유 DB 반영을 수행"""
-        log.info("⏰ 예약된 크롤링 작업 시작...")
-        env_path = PROJECT_ROOT / ".env.crawler"
-        api_key = get_key(env_path, "API_KEY")
-        scrapper = WebScrapper(api_key=api_key)
-        try:
-            # 봇이 멈추지 않도록 백그라운드 스레드에서 크롤링 수행
-            await asyncio.to_thread(asyncio.run, scrapper.run())
-            count = await asyncio.to_thread(
-                import_schedules_from_crawler_db_to_common_db,
-                scrapper,
-                str(self.s.schedule_db),
-            )
-            log.info("✅ 예약 크롤링 완료: %d건 일정 반영", count)
-            return True
-        except Exception:
-            log.exception("⚠️ 예약 크롤링 중 오류 발생")
+    def _crawling(self) -> bool:
+        thread = getattr(self.assistant, "crawl_thread", None)
+        return bool(thread and thread.is_alive())
+
+    def watch_crawl(self, job_queue: JobQueue | None, *, auto_import: bool = False, notify: bool = True) -> bool:
+        """크롤링이 진행 중이면, 끝났는지 30초마다 확인하는 작업을 건다 (이미 걸려 있으면 그대로 둠).
+        크롤링은 비서가 별도 스레드에서 돌리므로 봇은 기다리지 않고 바로 다른 메시지에 답할 수 있다."""
+        if job_queue is None or not self._crawling() or job_queue.get_jobs_by_name(CRAWL_WATCH_JOB):
             return False
-        
+        job_queue.run_repeating(self.check_crawl_done, interval=CRAWL_WATCH_SECONDS, first=CRAWL_WATCH_SECONDS,
+                                name=CRAWL_WATCH_JOB, data={"auto_import": auto_import, "notify": notify})
+        return True
+
+    async def check_crawl_done(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """크롤링이 끝났으면 결과를 보내고(필요하면 공유 DB 반영까지) 확인 작업을 멈춘다."""
+        if self._crawling():
+            return
+        context.job.schedule_removal()
+        opts = context.job.data or {}
+        text = await asyncio.to_thread(self.assistant.run_action, "get_crawl_result", {})
+        if opts.get("auto_import"):
+            text += "\n" + await asyncio.to_thread(self.assistant.run_action, "import_from_crawler", {})
+        log.info("크롤링 종료: %s", text.replace("\n", " / "))
+        if opts.get("notify", True):
+            await self.send(context.bot, text)
+
+    async def scheduled_crawl(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """매일 BOT_CRAWL_TIME: 크롤링 시작 → 끝나면 공유 DB 에 자동 반영 (메시지는 보내지 않고 로그만).
+        /crawl 과 같은 크롤러를 쓰므로, 이미 크롤링 중이면 두 번 돌리지 않는다."""
+        if self._crawling():
+            log.info("⏰ 예약 크롤링 건너뜀: 이미 크롤링 중")
+            return
+        log.info("⏰ 예약 크롤링 시작")
+        await asyncio.to_thread(self.assistant.run_action, "run_crawler", {})
+        self.watch_crawl(context.job_queue, auto_import=True, notify=False)
+
 
     async def tick(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         """BOT_CHECK_MINUTES 마다: 브리핑 → 마감 알림. 한 작업이 실패해도 다른 작업은 계속."""
@@ -196,10 +256,16 @@ class ScheduleBot:
         app.add_handler(CommandHandler("week", self.cmd_week, filters=mine))
         app.add_handler(CommandHandler("notice", self.cmd_notice, filters=mine))
         app.add_handler(CommandHandler("sync", self.cmd_sync, filters=mine))
+        app.add_handler(CommandHandler("crawl", self.cmd_crawl, filters=mine))
+        app.add_handler(CommandHandler("crawl_status", self.cmd_crawl_status, filters=mine))
+        app.add_handler(CommandHandler("crawl_import", self.cmd_crawl_import, filters=mine))
+        app.add_handler(CommandHandler("crawl_urls", self.cmd_crawl_urls, filters=mine))
+        app.add_handler(CommandHandler("crawl_add", self.cmd_crawl_add, filters=mine))
+        app.add_handler(CommandHandler("crawl_remove", self.cmd_crawl_remove, filters=mine))
         app.add_handler(MessageHandler(mine & filters.TEXT & ~filters.COMMAND, self.on_text))
         app.add_handler(MessageHandler(~mine, self.on_stranger))
         app.job_queue.run_repeating(self.tick, interval=self.b.check_minutes * 60, first=5)
-        # 매일 오전 6시에 자동 크롤링 수행
+        # 매일 BOT_CRAWL_TIME 에 자동 크롤링 (기본 06:00)
         crawl_time = time.fromisoformat(self.b.crawl_time).replace(tzinfo=ZoneInfo(self.s.timezone))
         app.job_queue.run_daily(self.scheduled_crawl, time=crawl_time, name="daily_crawl")
         return app
