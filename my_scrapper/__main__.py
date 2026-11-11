@@ -1,5 +1,5 @@
 """
-python -m my_scrapper [그냥옵션] {행위에 필요한거...} <행위>
+python -m crawler [그냥옵션] {행위에 필요한거...} <행위>
 <행위>: 
     run -> 크롤러를 실행함
     add -> 시작점 url을 추가함
@@ -20,15 +20,16 @@ import argparse
 from dotenv import get_key, set_key
 from pathlib import Path
 
-from . import MiguScrapper
+import asyncio
+from my_scrapper import MiguScrapper
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(
         prog="python -m my_scrapper", description="내 패키지의 커스텀 CLI 도구입니다."
     )
 
     # 행위
-    parser.add_argument("job", help="작업명: run|add|remove|set|get")
+    parser.add_argument("job", help="작업명: run|add|remove|set|get|export")
     # url
     parser.add_argument(
         "-u",
@@ -77,6 +78,7 @@ def main():
     args = parser.parse_args()
     job, stage, target, url, key, target = args.job, args.stage, args.target, args.url, args.key, args.target
     debug = args.debug
+    print(f"debug: {debug}")
     if job == "set":
         if not key: 
             print("키를 제공해 주세요")
@@ -84,15 +86,14 @@ def main():
         set_key(env_path, "API_KEY", key)
         print("키 설정완료")
         return
-
-    scrapper = MiguScrapper(api_key=get_key(env_path, "API_KEY"),debug=debug)
+    scrapper = MiguScrapper(api_key=get_key(env_path, "API_KEY"),debug=(not debug))
     if job == "run":
         match stage:
-            case "crawl": scrapper.crawl()
-            case "fetch_contents" : scrapper.fetch_contents()
+            case "crawl": await scrapper.crawl()
+            case "fetch_contents" : await scrapper.fetch_contents()
             case "filter_urls" : scrapper.filter_urls()
             case "extract_schedules" : scrapper.extract_schedules()
-            case "all" : scrapper.run()
+            case "all" : await scrapper.run()
         return
     if job == "add" or job == "remove":
         if url is None: 
@@ -125,6 +126,5 @@ def main():
                 print("추출된 일정들:\n"+"\n".join([f"{obj.url}:{obj.summary}:{obj.start_date or ""}~{obj.end_date or ""}" for obj in scrapper.get_schedules()]))
         return
 
-
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

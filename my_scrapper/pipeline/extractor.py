@@ -67,7 +67,7 @@ JSON 배열 스키마:
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gemini-2.5-flash-lite",#"gemini-2.5-flash",
+        model: str = "gemini-2.5-flash",#"gemini-2.5-flash-lite"
         system_instruction: str | None = None,
     ) -> None:
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY")

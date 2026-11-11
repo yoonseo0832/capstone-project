@@ -47,7 +47,7 @@ SYSTEM_RULES = """당신은 대학생의 일정 관리 비서입니다. 아래 [
 - 삭제는 사용자가 '삭제/지워'라고 명시했을 때만 합니다. '끝냈어/했어/제출했어'는 완료 처리입니다.
 - LMS 새로고침/다시 불러오기 요청에는 sync_lms 를 호출합니다.
 - 크롤러 실행/크롤링 시작 요청에는 run_crawler 를 호출합니다.
-- 크롤링 진행 상태나 결과 확인 요청에는 get_crawl_result 를 호출합니다.
+- 크롤링의 진행 상태, 완료 여부, 결과는 절대로 임의로 추측하거나 지어내서 답하지 마세요. 사용자가 크롤링 상태나 완료 여부, 결과 등을 물어보면 반드시 get_crawl_result 도구를 호출해야 합니다.
 - 크롤러가 수집한 일정을 가져오거나 DB에 반영/동기화해달라는 요청에는 import_from_crawler 를 호출합니다.
 - 크롤러 대상(시작점) URL 목록 확인 요청에는 get_crawler_url_list 를 호출합니다.
 - 크롤러 대상 URL 추가/삭제 요청에는 각각 add_crawler_urls, remove_crawler_urls 를 호출합니다.
@@ -95,7 +95,8 @@ FUNCTIONS = [
         name="add_crawler_urls", description="제공한 url을 크롤링 시작점 url목록에 등록함",
         parameters_json_schema={"type": "object", "properties": {"urls": _STR_LIST}}),
     types.FunctionDeclaration(
-        name="get_crawl_result", description="크롤링 상태,결과를 가져옴",
+        name="get_crawl_result",
+        description="현재 백그라운드 크롤링이 진행 중인지, 완료되었는지 상태와 결과를 조회합니다. 사용자가 크롤링 진행 상황, 완료 여부, 결과 등을 물어볼 때 반드시 호출해야 합니다.",
         parameters_json_schema={"type": "object", "properties": {}}),
 ]
 
