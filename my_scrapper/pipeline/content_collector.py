@@ -29,7 +29,7 @@ class ContentStorage(ABC):
     def get_content(self, url:str) -> tuple[str, str]|None: # content, hash
         """찾은 content를 반환"""
         pass
-    
+
     @abstractmethod
     def remove(self, url:str) -> tuple[str, str]|None: # 제거된 것의 content, hash
         """url에 해당하는 content를 지움, 해당하는 content가 여러개 있으면 모두제거"""
@@ -52,6 +52,7 @@ class SimpleContentStorage(ContentStorage):
     def remove(self, url: str) -> tuple[str, str]|None: # 제거된 것의 content, hash
         """url에 해당하는 content를 지움"""
         return self.contents.pop(url, None)
+
 
 from .html_cleaner import clean_html
 

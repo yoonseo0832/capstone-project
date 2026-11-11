@@ -94,6 +94,7 @@ cp .env.example .env                   # CANVAS_API_KEY, GEMINI_API_KEY 입력
 python -m lms sync                     # LMS 과제 수집 (지금 바로)
 python -m lms list                     # 공유 일정 확인
 python -m assistant                    # 비서와 대화
+python -m telegram_bot                 # 탤래그램 봇 실행 명령어
 ```
 
 - **CANVAS_API_KEY**: LMS → 계정 → 설정 → "새 액세스 토큰"

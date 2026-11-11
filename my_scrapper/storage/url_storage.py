@@ -155,6 +155,11 @@ class DatabaseUrlsProvider(UrlsProvider):
         self._peek()
         return len(self.queue) <= 0
 
+class DatabaseDeactivatedUrlsProvider(DatabaseUrlsProvider):
+    """DB에서 비활성화된 URL들을 순환하는 Provider"""
+    @override
+    def _select(self) -> list[UrlList]:
+        return self.db.select_deactivated_urls(self.fetch_limit, self.last_id)
 
 class DatabaseNotVisitedUrlsProvider(DatabaseUrlsProvider):
     """DB에서 아직 본문(RawContent)이 수집되지 않은 UrlList 목록을 순서대로 읽어오는 Provider"""
@@ -180,12 +185,6 @@ class DatabaseSourceUrlsProvider(DatabaseUrlsProvider):
                 .limit(self.fetch_limit)
             )
             return list(sess.execute(stmt).scalars().all())
-
-class DatabaseDeactivatedUrlsProvider(DatabaseUrlsProvider):
-    """DB에서 비활성화된 URL들을 순환하는 Provider"""
-    @override
-    def _select(self) -> list[UrlList]:
-        return self.db.select_deactivated_urls(self.fetch_limit, self.last_id)
 
 
 class DatabaseFilteredUrlsProvider(DatabaseUrlsProvider):

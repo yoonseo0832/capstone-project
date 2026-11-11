@@ -60,7 +60,6 @@ class UrlList(Base):
     is_active: Mapped[bool] = mapped_column( # url 활성화 여부, 활성화된 url들에 대해서만 본문,일정을 추출함
         Boolean, default=True, nullable=False
     )
-
     # 1:1 관계 (UrlList <-> RawContent)
     # 단일 객체 매핑이므로 타입 어노테이션에 List 대신 단일 모델 지정
     raw_content: Mapped["RawContent | None"] = relationship(
@@ -305,7 +304,6 @@ class Database:
             )
             result = sess.execute(stmt)
             return result.rowcount
-
 
     def close(self) -> None:
         """엔진 연결 종료"""

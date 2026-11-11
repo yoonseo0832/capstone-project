@@ -72,7 +72,7 @@ class DBContentStorage(ContentStorage):
             if raw is None or raw.content is None:
                 return None
             return (raw.content, raw.content_hash or "")
-    
+
     @override
     def remove(self, url:str)-> tuple[str,str]|None: # content, hash
         """url에 해당하는 원문을 찾아 db에서 제거함"""
@@ -84,7 +84,6 @@ class DBContentStorage(ContentStorage):
                 sess.delete(item)
                 return (item.content, item.content_hash)
             return None # 아무것도 못찾은경우
-
 
 class DBScheduleStorage(ContentStorage):
     """
@@ -150,7 +149,7 @@ class DBScheduleStorage(ContentStorage):
                     raw_json=item_json,
                 )
                 sess.add(record)
-
+                
     @override
     def remove(self, url: str) -> None:
         """특정 URL에 대해 등록된 ExtractedSchedule 레코드들을 모두 삭제"""
