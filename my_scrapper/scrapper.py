@@ -71,6 +71,7 @@ class WebScrapper:
         gemini_model: str = "gemini-2.5-flash",
         session_path: str | None = "./session.json",
         max_depth: int = 1,
+        debug: bool = False
     ) -> None:
         """
         :param db_path: 데이터베이스 파일 경로 (또는 ":memory:")
@@ -84,6 +85,7 @@ class WebScrapper:
         self.db_path = db_path
         self.session_path = session_path
         self.max_depth = max_depth
+        self.debug = debug
 
         # 1. 필터 구성
         if filters is None:
@@ -123,11 +125,14 @@ class WebScrapper:
         self.content_storage = DBContentStorage(self.db)
         self.schedule_storage = DBScheduleStorage(self.db)
 
-    def add_source(self, url: str, title: str = "") -> None:
+    async def _create_context(self)->Context:
+        return await Context.create(self.session_path, (not self.debug))
+
+    def add_source(self, url: str, title: str|None =None) -> None:
         """크롤링을 시작할 Source URL 등록"""
         clean = get_clean_url(url)
         source_storage = DBUrlsStorage(self.db, is_source=True) # is_source가 true인 행만 다루는 저장소 생성
-        source_storage.add(clean, title)
+        source_storage.add(clean, title or "")
     def remove_source(self, url: str) -> None:
         """등록되어있는 Source URL 제거"""
         clean = get_clean_url(url)
@@ -146,7 +151,10 @@ class WebScrapper:
         """등록되어있는 Source URL 제거"""
         for url in urls:
             self.remove_source(url)
-    
+    def get_sources(self) -> list[UrlList]:
+        """등록되어 있는 source url들을 가져옴"""
+        return self.db.select_sources()
+
     def deactivate_url(self,url:str):
         """수집된 url을 비활성화 합니다(추출목록에서 제외됨)"""
         clean = get_clean_url(url)
@@ -203,7 +211,7 @@ class WebScrapper:
             return 0
 
         print(f"\n[Step 1] URL 탐색 시작 (대상: {len(target_sources)}개, max_depth={target_depth})...")
-        context = await Context.create(self.session_path)
+        context = await self._create_context()
         page = await context.new_page()
 
         try:
@@ -243,7 +251,7 @@ class WebScrapper:
             return 0
 
         print("\n[Step 2] 미방문 URL 대상 HTML 본문 수집 시작...")
-        context = await Context.create(self.session_path)
+        context = await self._create_context()
         page = await context.new_page()
 
         try:
@@ -417,6 +425,13 @@ class WebScrapper:
             if has_schedule_only:
                 stmt = stmt.where(ExtractedSchedule.has_schedule == True)
             stmt = stmt.order_by(ExtractedSchedule.id.asc())
+            return list(sess.execute(stmt).scalars().all())
+
+    def get_crawled_urls(self) -> list[UrlList]:
+        """전체 크롤링된 URL 목록 조회"""
+        with self.db.session() as sess:
+            from sqlalchemy import select
+            stmt = select(UrlList).where(UrlList.is_active==True, UrlList.is_source==False).order_by(UrlList.id.asc())
             return list(sess.execute(stmt).scalars().all())
 
     def get_filtered_urls(self) -> list[FilteredUrl]:

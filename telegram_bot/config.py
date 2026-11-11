@@ -13,6 +13,7 @@ class BotSettings:
     token: str
     chat_id: int              # 이 chat_id 의 메시지만 처리 (혼자 쓰는 봇)
     briefing_time: str        # 아침 브리핑 시각 HH:MM
+    crawl_time: str           # 크롤링 시간
     remind_hours: list[int]   # 마감 N시간 전 알림 (예: [24, 3])
     check_minutes: int        # 브리핑/알림 확인 주기 (분)
     state_db: Path            # 보낸 알림 기록
@@ -29,6 +30,7 @@ def load_bot_settings() -> BotSettings:
         token=token,
         chat_id=int(chat_id),
         briefing_time=os.environ.get("BOT_BRIEFING_TIME", "07:00"),
+        crawl_time=os.environ.get("BOT_CRAWL_TIME", "06:00"),
         remind_hours=sorted({int(h) for h in hours.split(",") if h.strip()}, reverse=True),
         check_minutes=int(os.environ.get("BOT_CHECK_MINUTES", "5")),
         state_db=state if state.is_absolute() else PROJECT_ROOT / state,

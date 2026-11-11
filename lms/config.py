@@ -22,6 +22,7 @@ class Settings:
     canvas_api_key: str | None
     schedule_db: Path      # 팀 공유 일정 DB
     lms_raw_db: Path       # LMS 원본 DB (개인)
+    # crawler_db: Path       # 크롤러 원본 DB (개인)
     timezone: str
     sync_time: str         # 매일 LMS 수집 시각 HH:MM
     cleanup_time: str      # 매일 완료 일정 삭제 시각 HH:MM
@@ -40,6 +41,7 @@ def load_settings() -> Settings:
         canvas_api_key=os.environ.get("CANVAS_API_KEY") or None,
         schedule_db=_path("SCHEDULE_DB_PATH", "workspace/data/schedule.db"),
         lms_raw_db=_path("LMS_RAW_DB_PATH", "workspace/data/lms_raw.db"),
+        # crawler_db=_path("CRAWLER_DB_PATH", "workspace/data/crawler_raw.db"),
         timezone=os.environ.get("TZ_NAME", "Asia/Seoul"),
         sync_time=os.environ.get("LMS_SYNC_TIME", "07:00"),
         cleanup_time=os.environ.get("CLEANUP_TIME", "00:00"),
