@@ -87,12 +87,12 @@ class Context:
     ref_cnt: int = 0
 
     @classmethod
-    async def create(cls, session_path: str | None) -> "Context":
+    async def create(cls, session_path: str | None, headless: bool = False) -> "Context":
         if Context.playwright is None:
             Context.playwright = await async_playwright().start()
         if Context.browser is None:
             Context.browser = await Context.playwright.chromium.launch(
-                headless=False,
+                headless=headless,
                 args=[
                     "--disable-features=Translate",
                     "--disable-translate",
@@ -149,11 +149,13 @@ class Context:
     async def close(self) -> None:
         await self.context.close()
         Context.ref_cnt -= 1
-        if Context.ref_cnt == 0:
-            assert Context.browser is not None
-            assert Context.playwright is not None
-            await Context.browser.close()
-            await Context.playwright.stop()
+        if Context.ref_cnt <= 0:
+            if Context.browser is not None:
+                await Context.browser.close()
+                Context.browser = None
+            if Context.playwright is not None:
+                await Context.playwright.stop()
+                Context.playwright = None
 
     async def save_session(self) -> None:
         # 세션저장

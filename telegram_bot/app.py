@@ -12,15 +12,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, time
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
+from dotenv import get_key
 from telegram import BotCommand, LinkPreviewOptions, Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from assistant.bot import ScheduleAssistant
-from lms.config import Settings, load_settings
+from crawler.crawler_db_connect import import_schedules_from_crawler_db_to_common_db
+from lms.config import PROJECT_ROOT, Settings, load_settings
 from lms.sync import init_all, sync_lms
+from my_scrapper import WebScrapper
 from telegram_bot import messages, state
 from telegram_bot.config import BotSettings, load_bot_settings
 
@@ -92,6 +97,27 @@ class ScheduleBot:
         log.warning("허용되지 않은 대화 무시: chat_id=%s", chat.id if chat else None)
 
     # ------------------------------------------------------------ 주기 작업
+
+    async def scheduled_crawl(self, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """매일 정해진 시각(오전 6시)에 호출되어 크롤링 및 공유 DB 반영을 수행"""
+        log.info("⏰ 예약된 크롤링 작업 시작...")
+        env_path = PROJECT_ROOT / ".env.crawler"
+        api_key = get_key(env_path, "API_KEY")
+        scrapper = WebScrapper(api_key=api_key)
+        try:
+            # 봇이 멈추지 않도록 백그라운드 스레드에서 크롤링 수행
+            await asyncio.to_thread(asyncio.run, scrapper.run())
+            count = await asyncio.to_thread(
+                import_schedules_from_crawler_db_to_common_db,
+                scrapper,
+                str(self.s.schedule_db),
+            )
+            log.info("✅ 예약 크롤링 완료: %d건 일정 반영", count)
+            return True
+        except Exception:
+            log.exception("⚠️ 예약 크롤링 중 오류 발생")
+            return False
+        
 
     async def tick(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         """BOT_CHECK_MINUTES 마다: 브리핑 → 마감 알림. 한 작업이 실패해도 다른 작업은 계속."""
@@ -173,6 +199,9 @@ class ScheduleBot:
         app.add_handler(MessageHandler(mine & filters.TEXT & ~filters.COMMAND, self.on_text))
         app.add_handler(MessageHandler(~mine, self.on_stranger))
         app.job_queue.run_repeating(self.tick, interval=self.b.check_minutes * 60, first=5)
+        # 매일 오전 6시에 자동 크롤링 수행
+        crawl_time = time.fromisoformat(self.b.crawl_time).replace(tzinfo=ZoneInfo(self.s.timezone))
+        app.job_queue.run_daily(self.scheduled_crawl, time=crawl_time, name="daily_crawl")
         return app
 
     async def _post_init(self, app: Application) -> None:

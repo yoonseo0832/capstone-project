@@ -22,8 +22,8 @@ def settings(tmp_path):
 
 @pytest.fixture
 def bot_settings(tmp_path):
-    return BotSettings(token="x", chat_id=1, briefing_time="07:00", remind_hours=[24, 3],
-                       check_minutes=5, state_db=tmp_path / "bot.db")
+    return BotSettings(token="x", chat_id=1, briefing_time="07:00", crawl_time="06:00",
+                       remind_hours=[24, 3], check_minutes=5, state_db=tmp_path / "bot.db")
 
 
 def add(settings, title, due, course="262R (세종-학부)빅데이터개론(영강)-01분반", done=False):

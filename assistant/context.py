@@ -39,10 +39,24 @@ def short_course(name: str) -> str:
     return s or name
 
 
+def parse_due(due_at: str | None) -> datetime | None:
+    """'2026-09-09T09:00:00', '2026-09-09 09:00:00', '2026-09-09', '2026-09-09 09:00' 등 처리"""
+    if not due_at or not str(due_at).strip():
+        return None
+    s = str(due_at).strip()
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        try:
+            return datetime.strptime(s, schedule_db.TIME_FMT)
+        except ValueError:
+            return None
+
+
 def d_day(due_at: str | None, now: datetime) -> str:
-    if not due_at:
+    due = parse_due(due_at)
+    if not due:
         return "마감없음"
-    due = datetime.strptime(due_at, schedule_db.TIME_FMT)
     days = (due.date() - now.date()).days
     if due < now:
         return "마감지남"
@@ -50,17 +64,22 @@ def d_day(due_at: str | None, now: datetime) -> str:
 
 
 def due_label(due_at: str | None) -> str:
-    """'2026-10-07 23:59' → '2026-10-07(수) 23:59'. 연도를 넣어 LLM 이 연도를 추측(내년으로 착각)하지 않게 한다."""
-    if not due_at:
+    """'2026-10-07 23:59' → '2026-10-07(수) 23:59'. 연도를 넣어 LLM 이 연도를 추측(내년으로 착각)하지
+    않게 한다. 크롤러 등 다양한 포맷(ISO·날짜만)도 parse_due 로 견딘다."""
+    due = parse_due(due_at)
+    if not due:
         return "마감없음"
-    due = datetime.strptime(due_at, schedule_db.TIME_FMT)
-    return f"{due:%Y-%m-%d}({WEEKDAYS[due.weekday()]}) {due:%H:%M}"
+    s = str(due_at).strip()
+    # 시간 정보가 포함되어 있는지 확인 (T가 있거나 공백 뒤에 콜론이 있는 경우)
+    if "T" in s or (" " in s and ":" in s):
+        return f"{due:%Y-%m-%d}({WEEKDAYS[due.weekday()]}) {due:%H:%M}"
+    return f"{due:%Y-%m-%d}({WEEKDAYS[due.weekday()]})"
 
 
 def week_tag(due_at: str | None, now: datetime) -> str:
-    if not due_at:
+    due = parse_due(due_at)
+    if not due:
         return "-"
-    due = datetime.strptime(due_at, schedule_db.TIME_FMT)
     if due < now:
         return "지남"
     week_end = now.date() + timedelta(days=6 - now.weekday())  # 이번 주 일요일
