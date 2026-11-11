@@ -13,10 +13,10 @@ class BotSettings:
     token: str
     chat_id: int              # 이 chat_id 의 메시지만 처리 (혼자 쓰는 봇)
     briefing_time: str        # 아침 브리핑 시각 HH:MM
-    crawl_time: str           # 크롤링 시간
     remind_hours: list[int]   # 마감 N시간 전 알림 (예: [24, 3])
     check_minutes: int        # 브리핑/알림 확인 주기 (분)
     state_db: Path            # 보낸 알림 기록
+    crawl_time: str = "06:00" # 크롤링 시간
 
 
 def load_bot_settings() -> BotSettings:
