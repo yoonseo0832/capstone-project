@@ -70,7 +70,7 @@ class ScheduleBot:
         await self.reply(update, messages.week_text(self.s.schedule_db, datetime.now()))
 
     async def cmd_notice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self.reply(update, messages.notices_text(self.s.lms_raw_db))
+        await self.reply(update, messages.notices_text(self.s.schedule_db))
 
     async def cmd_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_chat.send_action(ChatAction.TYPING)
@@ -126,14 +126,14 @@ class ScheduleBot:
 
     def _new_notices(self) -> list[dict]:
         """지난 브리핑 이후 새로 올라온 공지. 첫 실행이면 기존 공지를 '이미 알림'으로
-        기록만 하고(도배 방지) 아무것도 반환하지 않는다."""
+        기록만 하고(도배 방지) 아무것도 반환하지 않는다. 공유 DB(schedules)에서 읽는다."""
         import sqlite3
 
-        from lms import raw_db
+        from common import schedule_db
         try:
-            items = raw_db.list_announcements(self.s.lms_raw_db, limit=100)
+            items = schedule_db.list_notices(self.s.schedule_db, limit=100)
         except sqlite3.OperationalError:
-            return []  # 아직 수집 전이라 raw_items 테이블이 없는 경우
+            return []  # 아직 수집 전이라 schedules 테이블이 없는 경우
         announced = state.announced_notice_ids(self.b.state_db)
         if not announced:  # 첫 브리핑: 기존 공지를 전부 봤다고 치고 표시하지 않음
             state.mark_notices_announced(self.b.state_db, [it["source_id"] for it in items])

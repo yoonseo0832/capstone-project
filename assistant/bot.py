@@ -27,7 +27,7 @@ MAX_HISTORY = 10  # 기억할 최근 대화 턴 수 (user+model 쌍)
 SYSTEM_RULES = """당신은 대학생의 일정 관리 비서입니다. 아래 [일정]과 [공지] 데이터를 근거로 한국어로 짧고 명확하게 답합니다.
 
 규칙:
-- 일정을 알려줄 때는 마감 임박 순으로 한 줄에 하나씩 씁니다. 예: `- D-7 | 10/13(화) 23:59 | 빅데이터개론 | Week 04 Lab | https://...`
+- 일정을 알려줄 때는 마감 임박 순으로 한 줄에 하나씩 씁니다. 예: `- D-7 | 2026-10-13(화) 23:59 | 빅데이터개론 | Week 04 Lab | https://...`
   D-day·마감·과목·제목·링크는 [일정]에 적힌 값을 그대로 복사합니다. 날짜·요일·D-day를 직접 계산하거나 바꾸지 마세요.
 - 형식 설명이나 머리글 줄은 출력하지 말고 바로 답합니다.
 - '이번 주'/'다음 주' 질문에는 '주' 칸이 '이번주'/'다음주'인 일정만 답합니다.
@@ -150,7 +150,7 @@ class ScheduleAssistant:
         thinking = types.ThinkingConfig(thinking_budget=0) if "2.5" in model else None
         return types.GenerateContentConfig(
             system_instruction=SYSTEM_RULES + "\n[일정]\n" + build_context(
-                self.settings.schedule_db, raw_db_path=self.settings.lms_raw_db),
+                self.settings.schedule_db),
             tools=[types.Tool(function_declarations=FUNCTIONS)],
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             thinking_config=thinking,

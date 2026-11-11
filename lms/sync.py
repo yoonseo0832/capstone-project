@@ -15,6 +15,8 @@ from lms.config import Settings
 log = logging.getLogger(__name__)
 
 SOURCE = "lms"
+# 공지를 공유 schedules 테이블에 넣을 때 쓰는 source (due_at=NULL). item_type → source 매핑
+NOTICE_SOURCE = {"announcement": "notice:lms", "lx_board": "notice:board"}
 COURSE_URL_RE = re.compile(r"/courses/(\d+)")
 RETRY_ATTEMPTS = 3
 RETRY_WAIT = 20  # 초
@@ -118,25 +120,44 @@ def sync_items(settings: Settings, items, full: bool = False, result: SyncResult
     return result
 
 
+def mirror_notice(settings: Settings, item: dict) -> None:
+    """공지를 팀 공유 DB(schedules)에도 넣는다. 마감이 없으므로 due_at=NULL, source='notice:...'.
+    과목명은 일정과 같은 규칙으로 content 에 '[과목명] 본문' 형태로 담아 둔다.
+    원본(본문·HTML·해시·변경감지)은 계속 각자 raw_db 에 두고, 공유 테이블엔 표시에 필요한 것만 올린다."""
+    course = item.get("course_name") or ""
+    body = item.get("content") or ""
+    content = f"[{course}] {body}".rstrip() if course else body
+    schedule_db.upsert_by_source(
+        settings.schedule_db, source=NOTICE_SOURCE[item["item_type"]], source_id=item["source_id"],
+        title=item["title"], content=content, due_at=None,
+        start_at=item.get("start_at"), url=item.get("link"),
+    )
+
+
 def sync_notices(settings: Settings, items, result: SyncResult | None = None) -> SyncResult:
-    """Canvas 공지를 원본 DB(raw_items)에만 저장한다. 마감이 없어 일정 테이블에는 올리지 않는다."""
+    """Canvas 공지를 원본 DB(raw_items)와 공유 DB(schedules, due_at=NULL)에 저장한다.
+    마감이 없어 /today·/week·알림엔 안 섞이고, 비서 [공지]·/notice 는 공유 DB에서 읽는다."""
     result = result or SyncResult()
+    schedule_db.init_db(settings.schedule_db)  # 단독 호출(테스트 등) 대비
     for item in items:
         result.notices += 1
         result.notice_ids.add(item["source_id"])
         if raw_db.save_item(settings.lms_raw_db, item) == "new":
             result.notices_new += 1
+        mirror_notice(settings, item)
     return result
 
 
 def sync_board_notices(settings: Settings, items, result: SyncResult | None = None) -> SyncResult:
-    """LearningX 게시판 공지를 원본 DB(raw_items)에만 저장한다."""
+    """LearningX 게시판 공지를 원본 DB(raw_items)와 공유 DB(schedules)에 저장한다."""
     result = result or SyncResult()
+    schedule_db.init_db(settings.schedule_db)
     for item in items:
         result.lx_notices += 1
         result.notice_ids.add(item["source_id"])
         if raw_db.save_item(settings.lms_raw_db, item) == "new":
             result.lx_new += 1
+        mirror_notice(settings, item)
     return result
 
 
@@ -164,11 +185,14 @@ def collect_learningx(settings: Settings, client, courses, result: SyncResult) -
 def prune_stale_notices(settings: Settings, result: SyncResult) -> None:
     """이번 수집에서 못 본 공지 = LMS 에서 사라진 공지 → raw_items 에서 삭제.
     출처별로 '빠짐없이 받았을 때만' 지운다 (네트워크 실패로 못 받은 걸 지우지 않도록)."""
+    schedule_db.init_db(settings.schedule_db)  # 단독 호출(테스트 등) 대비
     removed = []
     if result.canvas_notices_ok:
         removed += raw_db.prune_items(settings.lms_raw_db, "announcement", result.notice_ids)
+        schedule_db.prune_notices(settings.schedule_db, "notice:lms", result.notice_ids)
     if result.learningx_ok:
         removed += raw_db.prune_items(settings.lms_raw_db, "lx_board", result.notice_ids)
+        schedule_db.prune_notices(settings.schedule_db, "notice:board", result.notice_ids)
     result.pruned = len(removed)
     if removed:
         log.info("사라진 공지 %d건 정리: %s", len(removed), ", ".join(removed[:10]))

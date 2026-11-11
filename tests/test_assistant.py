@@ -43,23 +43,22 @@ def test_build_context(settings):
                              url="https://lms/a/1", source="lms", source_id="assignment:1")
     ctx = build_context(settings.schedule_db, datetime(2026, 10, 6, 21, 0))
     assert "2026-10-06 21:00 (화)" in ctx
-    assert "10/13(화) 23:59 | D-7 | 다음주 | 미완료 | 빅데이터개론 | Week 04 Lab | https://lms/a/1 | 실습 제출" in ctx
+    assert "2026-10-13(화) 23:59 | D-7 | 다음주 | 미완료 | 빅데이터개론 | Week 04 Lab | https://lms/a/1 | 실습 제출" in ctx
 
 
 def test_build_context_includes_notices(settings):
-    from lms import raw_db
-    raw_db.init_db(settings.lms_raw_db)
-    raw_db.save_item(settings.lms_raw_db, {
-        "source_id": "announcement:9", "item_type": "announcement",
-        "course_id": 1, "course_name": "262R (세종-학부)정보통신(영강)-01분반",
-        "title": "중간고사 안내", "content": "중간고사는 10/23 2교시", "content_html": "",
-        "link": "https://lms/n/9", "extracted_links": [], "due_at": None, "submitted": False,
-    })
-    # raw_db_path 를 주면 [공지] 섹션이 붙는다
-    ctx = build_context(settings.schedule_db, datetime(2026, 10, 6, 21, 0), raw_db_path=settings.lms_raw_db)
+    # 공지는 공유 DB(schedules)에 due_at=NULL, source='notice:...' 로 저장된다
+    schedule_db.upsert_by_source(
+        settings.schedule_db, source="notice:lms", source_id="announcement:9",
+        title="중간고사 안내", content="[262R (세종-학부)정보통신(영강)-01분반] 중간고사는 10/23 2교시",
+        due_at=None, url="https://lms/n/9")
+    ctx = build_context(settings.schedule_db, datetime(2026, 10, 6, 21, 0))
+    # [공지] 섹션에 붙고, [일정] 목록(마감 순)에는 섞이지 않는다
     assert "[공지]" in ctx
     assert "정보통신 | 중간고사 안내 | 중간고사는 10/23 2교시 | https://lms/n/9" in ctx
-    # raw_db_path 가 없으면 공지는 안 붙는다 (하위호환)
+    assert "일정 0건" in ctx  # 공지는 일정으로 세지 않음
+    # 공지가 없으면 [공지] 섹션은 안 붙는다
+    schedule_db.delete_by_source(settings.schedule_db, "notice:lms", "announcement:9")
     assert "[공지]" not in build_context(settings.schedule_db, datetime(2026, 10, 6, 21, 0))
 
 
