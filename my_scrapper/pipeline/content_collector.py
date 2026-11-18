@@ -66,8 +66,8 @@ class PageContentCollector:
 
     async def _fetch_one(self, url: str) -> str:
         """url 하나를 방문해서 정제된 본문 HTML을 추출함"""
-        await self._page.goto(url)
         try:
+            await self._page.goto(url)
             return clean_html(await self._page.get_raw_content())
         except Exception as e:
             return f"fail to fetch, e:{e}"

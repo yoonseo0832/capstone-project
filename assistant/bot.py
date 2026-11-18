@@ -133,7 +133,7 @@ class ScheduleAssistant:
         self.client = client or genai.Client(api_key=key)
         self.history: list[types.Content] = []
         # 크롤러 생성
-        self.crawler = WebScrapper(api_key=key, gemini_model=self.model) # 일단 기본 경로 사용(./scrapper.db)
+        self.crawler = WebScrapper(api_key=key, gemini_model=self.model) # 기본 경로 사용(./scrapper.db), 크롤링 화면 안보이게
         self.crawl_thread: threading.Thread | None = None # 진행중인 크롤러 스레드
         self.crawl_result: dict | None = None  # {"before": 통계, "after": 통계, "elapsed": 초}
         self.crawl_error: str | None = None

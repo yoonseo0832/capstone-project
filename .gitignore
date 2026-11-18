@@ -8,3 +8,4 @@ workspace/data/
 .pytest_cache/
 
 *.patch
+.patches/
